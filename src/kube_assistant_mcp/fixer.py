@@ -10,10 +10,9 @@ Two layers of safety are baked in on purpose, since this touches a live cluster:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 from .k8s_client import K8sClient
-from .models import FixSuggestion, IssueType, PodIssue, Severity
+from .models import FixSuggestion, PodIssue, Severity
 
 
 @dataclass
@@ -24,7 +23,7 @@ class FixPlan:
     kind: str  # "patch_deployment" | "delete_pod" | "manual"
     target_name: str
     target_namespace: str
-    patch: Optional[dict] = None
+    patch: dict | None = None
     risk: Severity = Severity.LOW
 
 
@@ -50,8 +49,10 @@ class RuleBasedFixer:
                     "keeps growing, this may only mask a leak."
                 ),
                 commands=[
-                    f"kubectl -n {issue.pod.namespace} set resources deployment/<deployment> "
-                    f"-c={issue.pod.container} --limits=memory=1Gi --requests=memory=256Mi"
+                    (
+                        f"kubectl -n {issue.pod.namespace} set resources deployment/<deployment> "
+                        f"-c={issue.pod.container} --limits=memory=1Gi --requests=memory=256Mi"
+                    )
                 ],
                 risk=Severity.MEDIUM,
             )
@@ -67,8 +68,10 @@ class RuleBasedFixer:
                     "real exception."
                 ),
                 commands=[
-                    f"kubectl -n {issue.pod.namespace} logs {issue.pod.name} "
-                    f"-c {issue.pod.container} --previous"
+                    (
+                        f"kubectl -n {issue.pod.namespace} logs {issue.pod.name} "
+                        f"-c {issue.pod.container} --previous"
+                    )
                 ],
                 risk=Severity.LOW,
                 requires_confirmation=False,

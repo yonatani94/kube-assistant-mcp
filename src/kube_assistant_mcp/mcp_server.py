@@ -10,8 +10,6 @@ Or directly:  python -m kube_assistant_mcp.mcp_server
 
 from __future__ import annotations
 
-from typing import Optional
-
 from fastmcp import FastMCP
 
 from .fixer import AutoFixer, RuleBasedFixer
@@ -33,7 +31,7 @@ mcp = FastMCP(
 _client_cache: dict[str, K8sClient] = {}
 
 
-def _client(context: Optional[str] = None) -> K8sClient:
+def _client(context: str | None = None) -> K8sClient:
     key = context or "__default__"
     if key not in _client_cache:
         _client_cache[key] = K8sClient(kube_context=context)
@@ -41,7 +39,7 @@ def _client(context: Optional[str] = None) -> K8sClient:
 
 
 @mcp.tool()
-def list_failing_pods(namespace: Optional[str] = None, context: Optional[str] = None) -> list[dict]:
+def list_failing_pods(namespace: str | None = None, context: str | None = None) -> list[dict]:
     """List all pods currently in a failure state (CrashLoopBackOff, OOMKilled,
     ImagePullBackOff, etc). Pass a namespace to narrow the scan, or omit it to
     scan the whole cluster.
@@ -72,7 +70,7 @@ def get_pod_logs(
     namespace: str = "default",
     previous: bool = True,
     tail_lines: int = 200,
-    context: Optional[str] = None,
+    context: str | None = None,
 ) -> str:
     """Fetch recent logs for a pod. Set previous=true (default) to get the
     logs from before the last crash, which is usually what you want for a
@@ -87,7 +85,7 @@ def diagnose_pod(
     pod_name: str,
     namespace: str = "default",
     use_llm: bool = True,
-    context: Optional[str] = None,
+    context: str | None = None,
 ) -> dict:
     """Run a full diagnosis on one pod: fetch logs+events, run pattern
     detection, and (optionally) get an LLM root-cause explanation with
@@ -143,11 +141,11 @@ def apply_fix(
     pod_name: str,
     namespace: str = "default",
     strategy: str = "restart",
-    deployment_name: Optional[str] = None,
+    deployment_name: str | None = None,
     memory_limit: str = "1Gi",
     memory_request: str = "256Mi",
     confirm: bool = False,
-    context: Optional[str] = None,
+    context: str | None = None,
 ) -> str:
     """Apply a fix to a failing pod. strategy is 'restart' (delete the pod so
     its controller recreates it) or 'memory-patch' (raise the memory

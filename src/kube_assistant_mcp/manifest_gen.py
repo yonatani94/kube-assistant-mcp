@@ -10,7 +10,6 @@ from __future__ import annotations
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
@@ -26,9 +25,9 @@ class DeploymentSpec:
     cpu_limit: str = "500m"
     memory_request: str = "128Mi"
     memory_limit: str = "512Mi"
-    env: Optional[dict[str, str]] = None
-    liveness_path: Optional[str] = None
-    readiness_path: Optional[str] = None
+    env: dict[str, str] | None = None
+    liveness_path: str | None = None
+    readiness_path: str | None = None
 
 
 class ManifestGenerator:

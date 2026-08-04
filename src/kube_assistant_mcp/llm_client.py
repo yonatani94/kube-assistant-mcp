@@ -11,7 +11,6 @@ import json
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
 
 from .models import Diagnosis, FixSuggestion, PodIssue
 
@@ -44,12 +43,12 @@ class LLMConfig:
     backend: str = "ollama"  # "ollama" | "openai"
     model: str = "llama3.1"
     base_url: str = "http://localhost:11434"
-    api_key: Optional[str] = None
+    api_key: str | None = None
     timeout_seconds: int = 60
     temperature: float = 0.2
 
     @classmethod
-    def from_env(cls) -> "LLMConfig":
+    def from_env(cls) -> LLMConfig:
         return cls(
             backend=os.environ.get("KUBE_ASSISTANT_LLM_BACKEND", "ollama"),
             model=os.environ.get("KUBE_ASSISTANT_LLM_MODEL", "llama3.1"),
@@ -131,7 +130,7 @@ def _build_backend(config: LLMConfig) -> LLMBackend:
 class LLMClient:
     """High-level entry point used by the CLI and the MCP server."""
 
-    def __init__(self, config: Optional[LLMConfig] = None, backend: Optional[LLMBackend] = None):
+    def __init__(self, config: LLMConfig | None = None, backend: LLMBackend | None = None):
         self.config = config or LLMConfig.from_env()
         self.backend = backend or _build_backend(self.config)
 

@@ -7,7 +7,6 @@ so tests can inject a fake client instead of hitting a real API server.
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from .models import IssueType, PodIssue, PodRef, Severity
 
@@ -36,7 +35,7 @@ class K8sClient:
     or without a kubeconfig present.
     """
 
-    def __init__(self, kube_context: Optional[str] = None, in_cluster: bool = False):
+    def __init__(self, kube_context: str | None = None, in_cluster: bool = False):
         try:
             from kubernetes import client, config  # type: ignore
         except ImportError as exc:  # pragma: no cover - exercised via mocks in tests
@@ -50,7 +49,7 @@ class K8sClient:
                 config.load_incluster_config()
             else:
                 config.load_kube_config(context=kube_context)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise KubernetesClientError(
                 f"Could not load kube config (context={kube_context!r}): {exc}"
             ) from exc
@@ -65,7 +64,7 @@ class K8sClient:
     def list_namespaces(self) -> list[str]:
         return [ns.metadata.name for ns in self.core.list_namespace().items]
 
-    def list_pods(self, namespace: Optional[str] = None) -> list:
+    def list_pods(self, namespace: str | None = None) -> list:
         if namespace:
             return self.core.list_namespaced_pod(namespace).items
         return self.core.list_pod_for_all_namespaces().items
@@ -74,7 +73,7 @@ class K8sClient:
         self,
         name: str,
         namespace: str,
-        container: Optional[str] = None,
+        container: str | None = None,
         previous: bool = False,
         tail_lines: int = 200,
     ) -> str:
@@ -93,9 +92,7 @@ class K8sClient:
     def get_pod_events(self, name: str, namespace: str) -> list[str]:
         field_selector = f"involvedObject.name={name}"
         try:
-            events = self.core.list_namespaced_event(
-                namespace, field_selector=field_selector
-            ).items
+            events = self.core.list_namespaced_event(namespace, field_selector=field_selector).items
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not fetch events for %s/%s: %s", namespace, name, exc)
             return []
@@ -104,7 +101,7 @@ class K8sClient:
     # ------------------------------------------------------------------ #
     # Detection
     # ------------------------------------------------------------------ #
-    def find_failing_pods(self, namespace: Optional[str] = None) -> list[PodIssue]:
+    def find_failing_pods(self, namespace: str | None = None) -> list[PodIssue]:
         """Scan pods and turn container statuses into structured PodIssue objects."""
         issues: list[PodIssue] = []
         for pod in self.list_pods(namespace):
@@ -113,7 +110,7 @@ class K8sClient:
                 issues.append(issue)
         return issues
 
-    def _classify_pod(self, pod) -> Optional[PodIssue]:
+    def _classify_pod(self, pod) -> PodIssue | None:
         meta = pod.metadata
         status = pod.status
         if status is None or not status.container_statuses:
@@ -201,8 +198,8 @@ class K8sClient:
 
     def apply_yaml(self, manifest: dict, namespace: str) -> None:
         """Minimal generic apply for a single manifest dict (Deployment/Service/etc)."""
-        from kubernetes import utils  # type: ignore
         from kubernetes import client as k8s_client  # type: ignore
+        from kubernetes import utils  # type: ignore
 
         api_client = k8s_client.ApiClient()
         utils.create_from_dict(api_client, manifest, namespace=namespace)

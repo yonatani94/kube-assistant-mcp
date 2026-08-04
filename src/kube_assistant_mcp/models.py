@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
 
 
 class IssueType(str, Enum):
@@ -33,8 +32,8 @@ class PodRef:
 
     name: str
     namespace: str
-    node: Optional[str] = None
-    container: Optional[str] = None
+    node: str | None = None
+    container: str | None = None
 
 
 @dataclass
@@ -47,8 +46,8 @@ class PodIssue:
     restart_count: int = 0
     reason: str = ""
     message: str = ""
-    last_termination_reason: Optional[str] = None
-    exit_code: Optional[int] = None
+    last_termination_reason: str | None = None
+    exit_code: int | None = None
     evidence: list[str] = field(default_factory=list)
     """Raw log lines / event messages that led to the classification."""
 
@@ -67,9 +66,9 @@ class FixSuggestion:
     explanation: str
     commands: list[str] = field(default_factory=list)
     """Human-runnable kubectl / helm commands, shown to the user."""
-    patch: Optional[dict] = None
+    patch: dict | None = None
     """Optional strategic-merge-patch body, used for --apply."""
-    manifest_yaml: Optional[str] = None
+    manifest_yaml: str | None = None
     """Optional full manifest/Helm values suggested as a replacement or addition."""
     risk: Severity = Severity.LOW
     requires_confirmation: bool = True
@@ -81,6 +80,6 @@ class Diagnosis:
 
     issue: PodIssue
     suggestions: list[FixSuggestion] = field(default_factory=list)
-    llm_explanation: Optional[str] = None
+    llm_explanation: str | None = None
     source: str = "rules"
     """'rules' | 'llm' | 'rules+llm' — where the diagnosis came from."""

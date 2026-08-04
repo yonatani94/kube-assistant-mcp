@@ -14,7 +14,6 @@ from __future__ import annotations
 import shutil
 import sys
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
@@ -33,8 +32,10 @@ app = typer.Typer(
 )
 console = Console()
 
+_DEFAULT_OUTPUT_DIR = Path("./generated")
 
-def _get_client(context: Optional[str]) -> K8sClient:
+
+def _get_client(context: str | None) -> K8sClient:
     try:
         return K8sClient(kube_context=context)
     except KubernetesClientError as exc:
@@ -44,8 +45,8 @@ def _get_client(context: Optional[str]) -> K8sClient:
 
 @app.command()
 def scan(
-    namespace: Optional[str] = typer.Option(None, "--namespace", "-n", help="Limit scan to one namespace."),
-    context: Optional[str] = typer.Option(None, "--context", help="kubeconfig context to use."),
+    namespace: str | None = typer.Option(None, "--namespace", "-n", help="Limit scan to one namespace."),
+    context: str | None = typer.Option(None, "--context", help="kubeconfig context to use."),
 ):
     """Scan the cluster (or a namespace) and list all failing pods."""
     client = _get_client(context)
@@ -79,18 +80,16 @@ def scan(
 def diagnose(
     pod_name: str = typer.Argument(..., help="Name of the pod to diagnose."),
     namespace: str = typer.Option("default", "--namespace", "-n"),
-    context: Optional[str] = typer.Option(None, "--context"),
+    context: str | None = typer.Option(None, "--context"),
     use_llm: bool = typer.Option(True, "--llm/--no-llm", help="Ask the local/remote LLM for an explanation."),
-    llm_backend: Optional[str] = typer.Option(None, "--llm-backend", help="ollama | openai"),
-    llm_model: Optional[str] = typer.Option(None, "--llm-model"),
+    llm_backend: str | None = typer.Option(None, "--llm-backend", help="ollama | openai"),
+    llm_model: str | None = typer.Option(None, "--llm-model"),
 ):
     """Deep-dive a single pod: fetch logs + events, classify the failure,
     and (optionally) ask the LLM to explain it and suggest fixes.
     """
     client = _get_client(context)
-    issues = [
-        i for i in client.find_failing_pods(namespace) if i.pod.name == pod_name
-    ]
+    issues = [i for i in client.find_failing_pods(namespace) if i.pod.name == pod_name]
     if not issues:
         console.print(
             f"[yellow]No known failure detected for pod '{pod_name}' in namespace "
@@ -149,13 +148,11 @@ def diagnose(
 def fix(
     pod_name: str = typer.Argument(...),
     namespace: str = typer.Option("default", "--namespace", "-n"),
-    context: Optional[str] = typer.Option(None, "--context"),
-    strategy: str = typer.Option(
-        "restart", "--strategy", help="restart | memory-patch"
-    ),
+    context: str | None = typer.Option(None, "--context"),
+    strategy: str = typer.Option("restart", "--strategy", help="restart | memory-patch"),
     memory_limit: str = typer.Option("1Gi", "--memory-limit", help="Used with --strategy memory-patch"),
     memory_request: str = typer.Option("256Mi", "--memory-request"),
-    deployment: Optional[str] = typer.Option(None, "--deployment", help="Deployment name (memory-patch)."),
+    deployment: str | None = typer.Option(None, "--deployment", help="Deployment name (memory-patch)."),
     dry_run: bool = typer.Option(True, "--dry-run/--no-dry-run", help="Preview only, default on."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the interactive confirmation prompt."),
 ):
@@ -211,7 +208,7 @@ def generate(
     port: int = typer.Option(8080, "--port"),
     replicas: int = typer.Option(1, "--replicas"),
     kind_: str = typer.Option("manifest", "--kind", help="manifest | helm"),
-    output: Path = typer.Option(Path("./generated"), "--output", "-o"),
+    output: Path = typer.Option(_DEFAULT_OUTPUT_DIR, "--output", "-o"),  # noqa: B008
 ):
     """Generate a plain Deployment+Service manifest, or a minimal Helm chart."""
     spec = DeploymentSpec(name=name, namespace=namespace, image=image, container_port=port, replicas=replicas)
@@ -236,7 +233,7 @@ def generate(
 
 @app.command()
 def doctor(
-    context: Optional[str] = typer.Option(None, "--context", help="kubeconfig context to check."),
+    context: str | None = typer.Option(None, "--context", help="kubeconfig context to check."),
     pull_model: bool = typer.Option(
         False, "--pull-model", help="If Ollama is reachable but the configured model isn't pulled, pull it."
     ),
@@ -327,12 +324,18 @@ def doctor(
         import os
 
         has_key = bool(os.environ.get("OPENAI_API_KEY"))
-        row("OpenAI API key set", has_key, "OPENAI_API_KEY is set" if has_key else "export OPENAI_API_KEY=sk-...")
+        row(
+            "OpenAI API key set",
+            has_key,
+            "OPENAI_API_KEY is set" if has_key else "export OPENAI_API_KEY=sk-...",
+        )
 
     console.print(table)
 
     if all_ok:
-        console.print("\n[bold green]Everything looks ready.[/bold green] Try: [green]kube-assistant scan[/green]")
+        console.print(
+            "\n[bold green]Everything looks ready.[/bold green] Try: [green]kube-assistant scan[/green]"
+        )
     else:
         console.print(
             "\n[bold yellow]Some checks failed.[/bold yellow] Fix the items marked "
