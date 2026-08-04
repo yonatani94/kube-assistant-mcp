@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
-    { name = "Your Name", email = "you@example.com" }
+    { name = "Yehonatan Arami", email = "yonatani94@users.noreply.github.com" }
 ]
 keywords = ["kubernetes", "mcp", "llm", "ollama", "cli", "devops", "sre", "cursor", "claude"]
 classifiers = [
@@ -45,9 +45,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/YOUR_USERNAME/kube-assistant-mcp"
-Repository = "https://github.com/YOUR_USERNAME/kube-assistant-mcp"
-Issues = "https://github.com/YOUR_USERNAME/kube-assistant-mcp/issues"
+Homepage = "https://github.com/yonatani94/kube-assistant-mcp"
+Repository = "https://github.com/yonatani94/kube-assistant-mcp"
+Issues = "https://github.com/yonatani94/kube-assistant-mcp/issues"
 
 [project.scripts]
 kube-assistant = "kube_assistant_mcp.cli:app"

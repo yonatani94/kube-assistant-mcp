@@ -17,7 +17,7 @@ git branch -M main
 
 # Create the repo on GitHub first (via github.com/new, name: kube-assistant-mcp),
 # then:
-git remote add origin https://github.com/YOUR_USERNAME/kube-assistant-mcp.git
+git remote add origin https://github.com/yonatani94/kube-assistant-mcp.git
 git push -u origin main
 ```
 

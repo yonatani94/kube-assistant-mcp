@@ -104,5 +104,5 @@ test suite against every PR and auto-publishing to PyPI on tagged releases.
   parsing, and it works the same whether the backend is a local 8B model or
   GPT-4-class.
 
-Repo: https://github.com/YOUR_USERNAME/kube-assistant-mcp
+Repo: https://github.com/yonatani94/kube-assistant-mcp
 PyPI: https://pypi.org/project/kube-assistant-mcp/

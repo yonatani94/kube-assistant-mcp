@@ -126,7 +126,7 @@ MCP (FastMCP)─┘         │
 ## Development
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/kube-assistant-mcp
+git clone https://github.com/yonatani94/kube-assistant-mcp
 cd kube-assistant-mcp
 pip install -e ".[dev]"
 pytest
