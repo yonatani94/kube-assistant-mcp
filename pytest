@@ -1,0 +1,21 @@
+from unittest.mock import MagicMock, patch
+
+from typer.testing import CliRunner
+
+from kube_assistant_mcp.cli import app
+
+runner = CliRunner()
+
+
+def test_doctor_command():
+    fake_client = MagicMock()
+    fake_response = MagicMock()
+    fake_response.raise_for_status.return_value = None
+
+    with (
+        patch(kube_assistant_mcp.cli.K8sClient, return_value=fake_client),
+        patch(requests.get, return_value=fake_response),
+    ):
+        result = runner.invoke(app, [doctor])
+        assert result.exit_code == 0
+ tests/test_cli_doctor.py

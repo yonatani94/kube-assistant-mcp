@@ -1,6 +1,7 @@
 """kube-assistant CLI — Typer app.
 
 Commands:
+  doctor     Check that everything needed (Python, kubectl, cluster, LLM) is ready to go.
   scan       List/summarize currently failing pods in a cluster.
   diagnose   Deep-dive a single pod: logs + events + LLM explanation + fixes.
   fix        Apply (or dry-run) a suggested fix, with an interactive confirm.
@@ -10,6 +11,8 @@ Commands:
 
 from __future__ import annotations
 
+import shutil
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -228,6 +231,114 @@ def generate(
         console.print(f"[green]Wrote Helm chart to {chart_dir}[/green]")
     else:
         console.print(f"[red]Unknown --kind: {kind_} (expected 'manifest' or 'helm')[/red]")
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def doctor(
+    context: Optional[str] = typer.Option(None, "--context", help="kubeconfig context to check."),
+    pull_model: bool = typer.Option(
+        False, "--pull-model", help="If Ollama is reachable but the configured model isn't pulled, pull it."
+    ),
+):
+    """Check that everything kube-assistant needs is installed and reachable:
+    Python version, kubectl, cluster connectivity, and the configured LLM
+    backend (Ollama or OpenAI). Run this right after installing, or any time
+    something isn't working, to see exactly what's missing.
+    """
+    console.print("[bold]kube-assistant doctor[/bold] — checking your environment...\n")
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Check")
+    table.add_column("Status")
+    table.add_column("Details")
+
+    all_ok = True
+
+    def row(name: str, ok: bool, details: str):
+        nonlocal all_ok
+        all_ok = all_ok and ok
+        mark = "[green]✓ OK[/green]" if ok else "[red]✗ MISSING[/red]"
+        table.add_row(name, mark, details)
+
+    # 1. Python version
+    py_ok = sys.version_info >= (3, 10)
+    row(
+        "Python >= 3.10",
+        py_ok,
+        f"{sys.version.split()[0]}" if py_ok else f"{sys.version.split()[0]} (upgrade required)",
+    )
+
+    # 2. kubectl on PATH
+    kubectl_path = shutil.which("kubectl")
+    row("kubectl on PATH", kubectl_path is not None, kubectl_path or "brew install kubectl")
+
+    # 3. Cluster connectivity
+    cluster_ok = False
+    cluster_detail = "no cluster reachable"
+    try:
+        client = K8sClient(kube_context=context)
+        namespaces = client.list_namespaces()
+        cluster_ok = True
+        cluster_detail = f"connected (context={client.context or 'default'}, {len(namespaces)} namespaces)"
+    except KubernetesClientError as exc:
+        cluster_detail = str(exc)
+    except Exception as exc:  # noqa: BLE001
+        cluster_detail = f"unexpected error: {exc}"
+    row("Kubernetes cluster reachable", cluster_ok, cluster_detail)
+
+    # 4. Helm (optional)
+    helm_path = shutil.which("helm")
+    row("helm on PATH (optional)", helm_path is not None, helm_path or "only needed for `--kind helm` output")
+
+    # 5. LLM backend
+    llm_config = LLMConfig.from_env()
+    if llm_config.backend == "ollama":
+        try:
+            import requests
+
+            resp = requests.get(f"{llm_config.base_url}/api/tags", timeout=3)
+            resp.raise_for_status()
+            models = [m["name"] for m in resp.json().get("models", [])]
+            has_model = any(llm_config.model in m for m in models)
+            if has_model:
+                row("Ollama reachable + model pulled", True, f"{llm_config.model} available")
+            else:
+                detail = f"Ollama is up, but '{llm_config.model}' isn't pulled (have: {', '.join(models) or 'none'})"
+                if pull_model:
+                    console.print(f"[dim]Pulling {llm_config.model}... this may take a few minutes.[/dim]")
+                    import subprocess
+
+                    subprocess.run(["ollama", "pull", llm_config.model], check=False)
+                    row("Ollama reachable + model pulled", True, f"{llm_config.model} pulled just now")
+                else:
+                    row(
+                        "Ollama reachable + model pulled",
+                        False,
+                        detail + " — run with --pull-model, or `ollama pull " + llm_config.model + "`",
+                    )
+        except Exception:  # noqa: BLE001
+            row(
+                "Ollama reachable",
+                False,
+                "not reachable at " + llm_config.base_url + " — run `ollama serve`, or see PREREQUISITES.md",
+            )
+    else:
+        import os
+
+        has_key = bool(os.environ.get("OPENAI_API_KEY"))
+        row("OpenAI API key set", has_key, "OPENAI_API_KEY is set" if has_key else "export OPENAI_API_KEY=sk-...")
+
+    console.print(table)
+
+    if all_ok:
+        console.print("\n[bold green]Everything looks ready.[/bold green] Try: [green]kube-assistant scan[/green]")
+    else:
+        console.print(
+            "\n[bold yellow]Some checks failed.[/bold yellow] Fix the items marked "
+            "MISSING above, or see PREREQUISITES.md for full install instructions. "
+            "Rule-based diagnosis (`--no-llm`) still works even without an LLM backend."
+        )
         raise typer.Exit(code=1)
 
 

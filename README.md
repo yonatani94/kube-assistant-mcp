@@ -34,15 +34,33 @@ Debugging a failing Pod is a repetitive, mechanical loop: `describe` → `logs -
 
 ## Installation
 
+### Option A — from PyPI
+
 ```bash
 pip install kube-assistant-mcp
+kube-assistant doctor       # checks Python/kubectl/cluster/Ollama and tells you what's missing
 ```
 
-Requires Python 3.10+ and a working `kubeconfig` (the same one `kubectl` uses).
+### Option B — from source (one command)
 
-For LLM-powered diagnosis, either:
-- run [Ollama](https://ollama.com) locally (`ollama pull llama3.1`), or
-- export `OPENAI_API_KEY` and pass `--llm-backend openai`.
+```bash
+git clone https://github.com/yonatani94/kube-assistant-mcp
+cd kube-assistant-mcp
+make setup                  # creates a venv, installs everything, runs the doctor check
+source .venv/bin/activate
+```
+
+Either way, `kube-assistant doctor` is the entry point: it verifies Python 3.10+,
+`kubectl` + cluster connectivity, and your configured LLM backend (Ollama or
+OpenAI) in one shot, and tells you exactly what to install or run next —
+no guessing required.
+
+Requires Python 3.10+ and a working `kubeconfig` (the same one `kubectl` uses).
+For LLM-powered diagnosis, either run [Ollama](https://ollama.com) locally
+(`ollama pull llama3.1`) or export `OPENAI_API_KEY` and pass `--llm-backend openai`.
+
+New to any of this? See **[PREREQUISITES.md](PREREQUISITES.md)** for full install
+instructions (Python, kubectl, Ollama) and a hardware/model-size guide.
 
 ## CLI usage
 
@@ -128,7 +146,7 @@ MCP (FastMCP)─┘         │
 ```bash
 git clone https://github.com/yonatani94/kube-assistant-mcp
 cd kube-assistant-mcp
-pip install -e ".[dev]"
+make setup
 pytest
 ```
 
