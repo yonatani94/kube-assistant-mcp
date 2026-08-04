@@ -31,9 +31,11 @@ def test_doctor_reports_all_ok_when_everything_reachable():
     fake_response.json.return_value = {"models": [{"name": "llama3.1:latest"}]}
     fake_response.raise_for_status.return_value = None
 
-    with patch("kube_assistant_mcp.cli.K8sClient", return_value=fake_client):
-        with patch("requests.get", return_value=fake_response):
-            result = runner.invoke(app, ["doctor"])
+    with (
+        patch("kube_assistant_mcp.cli.K8sClient", return_value=fake_client),
+        patch("requests.get", return_value=fake_response),
+    ):
+        result = runner.invoke(app, ["doctor"])
 
     assert result.exit_code == 0
     assert "Everything looks ready" in result.stdout
