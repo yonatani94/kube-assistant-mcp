@@ -1,0 +1,46 @@
+# A deliberately broken Deployment, useful for demoing kube-assistant-mcp.
+#
+# It requests way more memory than it's given (128Mi limit but the busybox
+# loop allocates until it dies), which reliably reproduces OOMKilled ->
+# CrashLoopBackOff. Deploy it, then run:
+#
+#   kubectl apply -f examples/crashy-demo-app.yaml
+#   kube-assistant scan -n default
+#   kube-assistant diagnose crashy-demo -n default
+#
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crashy-demo
+  labels:
+    app: crashy-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: crashy-demo
+  template:
+    metadata:
+      labels:
+        app: crashy-demo
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command:
+            - "sh"
+            - "-c"
+            - |
+              echo "starting app";
+              echo "connecting to db...";
+              echo "dial tcp 10.0.0.5:5432: connect: connection refused";
+              # Allocate memory until the container is OOMKilled.
+              : $(< /dev/zero head -c 300m | tail);
+              sleep 3600
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "50m"
+            limits:
+              memory: "64Mi"
+              cpu: "100m"
