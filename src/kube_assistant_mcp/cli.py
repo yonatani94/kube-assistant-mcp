@@ -24,7 +24,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .fixer import RuleBasedFixer
-from .jira_client import JiraClient, JiraClientError, JiraConfig
+from .jira_client import JiraClient, JiraClientError, JiraConfig, build_ticket_markdown, severity_to_priority
 from .k8s_client import K8sClient, KubernetesClientError
 from .llm_client import LLMClient, LLMConfig
 from .log_analyzer import LogAnalyzer
@@ -179,12 +179,35 @@ def diagnose(
         console.print(f"   {s.explanation}")
         for cmd in s.commands:
             console.print(f"   [green]$ {cmd}[/green]")
+        if s.manifest_yaml:
+            console.print("   [dim]Manifest change:[/dim]")
+            for line in s.manifest_yaml.rstrip("\n").splitlines():
+                console.print(f"   [cyan]{line}[/cyan]")
 
     console.print(
         "\n[dim]Tip: run `kube-assistant open-ticket "
         f"{pod_name} -n {namespace}` to hand this off to Jira for someone with "
         "cluster write access.[/dim]"
     )
+
+
+def _format_fix_markdown(suggestions: list[FixSuggestion]) -> str:
+    """Renders suggestions as Markdown for the Jira ticket body: each
+    suggestion's title/explanation as a bullet, followed by its exact
+    manifest lines and/or commands as fenced code blocks (not prose), so the
+    ticket shows precisely what to change.
+    """
+    if not suggestions:
+        return "No automatic suggestion; manual investigation required."
+
+    blocks: list[str] = []
+    for s in suggestions:
+        blocks.append(f"- {s.title} (risk: {s.risk.value}): {s.explanation}")
+        if s.manifest_yaml:
+            blocks.append(f"```yaml\n{s.manifest_yaml.rstrip()}\n```")
+        if s.commands:
+            blocks.append("```bash\n" + "\n".join(s.commands) + "\n```")
+    return "\n\n".join(blocks)
 
 
 @app.command("open-ticket")
@@ -211,12 +234,12 @@ def open_ticket(
     issue = result.issue
     summary = f"[{issue.severity.value}] {issue.issue_type.value} in {namespace}/{pod_name}"
     description = result.llm_explanation or result.findings_summary or "No pattern match; manual log review needed."
-    fix_text = "\n".join(f"- {s.title}: {s.explanation}" for s in result.suggestions) or (
-        "No automatic suggestion; manual investigation required."
-    )
+    fix_text = _format_fix_markdown(result.suggestions)
+    priority = severity_to_priority(issue.severity.value)
 
     console.print("\n[bold]Ticket preview[/bold]")
     console.print(f"[bold]Summary:[/bold] {summary}")
+    console.print(f"[bold]Priority:[/bold] {priority or '(not set — unrecognized severity)'}")
     console.print(f"[bold]Description:[/bold] {description}")
     console.print(f"[bold]Recommended fix:[/bold]\n{fix_text}")
 
@@ -230,16 +253,16 @@ def open_ticket(
         jira = JiraClient(JiraConfig.from_env())
         opened = jira.create_issue(
             summary=summary,
-            description=(
-                f"Pod: {namespace}/{pod_name}\nSeverity: {issue.severity.value}\n\n"
-                f"Investigation summary:\n{description}\n\nRecommended fix:\n{fix_text}"
-            ),
+            description=build_ticket_markdown(pod_name, namespace, issue.severity.value, description, fix_text),
             project_key=project,
+            priority=priority,
         )
     except JiraClientError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
 
+    if opened.get("warning"):
+        console.print(f"[yellow]{opened['warning']}[/yellow]")
     console.print(f"\n[green]Opened {opened['key']}: {opened['url']}[/green]")
 
 
