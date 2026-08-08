@@ -28,7 +28,8 @@ class KubernetesClientError(RuntimeError):
 
 class K8sClient:
     """Wraps kubernetes.client.CoreV1Api / AppsV1Api for the operations this
-    project needs: listing pods, reading logs/events, and applying patches.
+    project needs: listing pods, reading logs/events. Read-only against the
+    cluster — this project never mutates the cluster it's pointed at.
 
     The kubernetes package is imported lazily inside __init__ so that the
     rest of the codebase (and the test suite) can run without it installed
@@ -188,14 +189,8 @@ class K8sClient:
         return Severity.LOW
 
     # ------------------------------------------------------------------ #
-    # Write operations (used by the auto-fixer)
+    # Manifest generation support
     # ------------------------------------------------------------------ #
-    def patch_deployment(self, name: str, namespace: str, patch: dict) -> None:
-        self.apps.patch_namespaced_deployment(name=name, namespace=namespace, body=patch)
-
-    def delete_pod(self, name: str, namespace: str) -> None:
-        self.core.delete_namespaced_pod(name=name, namespace=namespace)
-
     def apply_yaml(self, manifest: dict, namespace: str) -> None:
         """Minimal generic apply for a single manifest dict (Deployment/Service/etc)."""
         from kubernetes import client as k8s_client  # type: ignore

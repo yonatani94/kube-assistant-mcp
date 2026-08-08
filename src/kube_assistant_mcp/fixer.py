@@ -1,30 +1,14 @@
-"""Rule-based fix suggestions and the (careful) apply-to-cluster logic.
+"""Rule-based fix suggestions, generated purely from an issue's classification.
 
-Two layers of safety are baked in on purpose, since this touches a live cluster:
-1. Every AutoFixer method that mutates the cluster requires `confirm=True`
-   unless the caller explicitly passes `dry_run=False, confirm=True`.
-2. `plan()` never touches the network — it only returns what *would* happen,
-   so the CLI can always show a diff before asking the user to confirm.
+This module never touches the cluster — it only produces suggestion text
+(commands to run, explanations). Cluster access from this project is
+read-only; the recommended fix ends up in a Jira ticket (see
+`jira_client.py`) for someone with write access to action.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-from .k8s_client import K8sClient
 from .models import FixSuggestion, PodIssue, Severity
-
-
-@dataclass
-class FixPlan:
-    """What the fixer intends to do, before anything touches the cluster."""
-
-    description: str
-    kind: str  # "patch_deployment" | "delete_pod" | "manual"
-    target_name: str
-    target_namespace: str
-    patch: dict | None = None
-    risk: Severity = Severity.LOW
 
 
 class RuleBasedFixer:
@@ -129,73 +113,3 @@ class RuleBasedFixer:
             ],
             requires_confirmation=False,
         )
-
-
-class AutoFixer:
-    """Turns a chosen FixSuggestion into cluster mutations, behind an
-    explicit dry-run/confirm gate.
-    """
-
-    def __init__(self, client: K8sClient):
-        self.client = client
-
-    def plan_restart(self, issue: PodIssue) -> FixPlan:
-        return FixPlan(
-            description=f"Delete pod {issue.pod.namespace}/{issue.pod.name} to force a restart",
-            kind="delete_pod",
-            target_name=issue.pod.name,
-            target_namespace=issue.pod.namespace,
-            risk=Severity.LOW,
-        )
-
-    def plan_resource_patch(
-        self, deployment_name: str, namespace: str, container: str, memory_limit: str, memory_request: str
-    ) -> FixPlan:
-        patch = {
-            "spec": {
-                "template": {
-                    "spec": {
-                        "containers": [
-                            {
-                                "name": container,
-                                "resources": {
-                                    "limits": {"memory": memory_limit},
-                                    "requests": {"memory": memory_request},
-                                },
-                            }
-                        ]
-                    }
-                }
-            }
-        }
-        return FixPlan(
-            description=(
-                f"Patch deployment {namespace}/{deployment_name}: set memory "
-                f"limit={memory_limit}, request={memory_request} on container {container}"
-            ),
-            kind="patch_deployment",
-            target_name=deployment_name,
-            target_namespace=namespace,
-            patch=patch,
-            risk=Severity.MEDIUM,
-        )
-
-    def apply(self, plan: FixPlan, dry_run: bool = True, confirm: bool = False) -> str:
-        """Executes a FixPlan. Returns a human-readable result string.
-
-        Safety gate: real cluster mutation only happens when dry_run=False
-        AND confirm=True. Any other combination returns a description of
-        what *would* run, without touching the cluster.
-        """
-        if dry_run or not confirm:
-            return f"[DRY RUN] Would execute: {plan.description}"
-
-        if plan.kind == "delete_pod":
-            self.client.delete_pod(plan.target_name, plan.target_namespace)
-            return f"Deleted pod {plan.target_namespace}/{plan.target_name} (it will be recreated by its controller)."
-
-        if plan.kind == "patch_deployment":
-            self.client.patch_deployment(plan.target_name, plan.target_namespace, plan.patch)
-            return f"Patched deployment {plan.target_namespace}/{plan.target_name}."
-
-        return f"No-op: fix kind {plan.kind!r} requires manual action. {plan.description}"

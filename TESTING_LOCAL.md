@@ -61,12 +61,9 @@ kube-assistant diagnose <pod-name> --no-llm
 # 3) Full diagnosis with a local LLM (needs Ollama running: `ollama serve` + `ollama pull llama3.1`)
 kube-assistant diagnose <pod-name>
 
-# 4) Preview a fix (dry-run, safe, doesn't touch the cluster)
-kube-assistant fix <pod-name> --strategy restart
-
-# 5) Actually apply it
-kube-assistant fix <pod-name> --strategy restart --no-dry-run
-kubectl get pods -w   # confirm a new pod was created
+# 4) Diagnose, then open a Jira bug ticket with the root cause + recommended
+#    fix (needs Jira env vars set — see README's "Jira configuration")
+kube-assistant open-ticket <pod-name>
 ```
 
 Get the exact pod name from step 1's `scan` output or `kubectl get pods`.

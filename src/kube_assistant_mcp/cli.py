@@ -1,13 +1,13 @@
 """kube-assistant CLI — Typer app.
 
 Commands:
-  setup      Install missing prerequisites (kubectl, Helm, Ollama + model) via Homebrew/official scripts.
-  doctor     Check that everything needed (Python, kubectl, cluster, LLM) is ready to go.
-  scan       List/summarize currently failing pods in a cluster.
-  diagnose   Deep-dive a single pod: logs + events + LLM explanation + fixes.
-  fix        Apply (or dry-run) a suggested fix, with an interactive confirm.
-  generate   Generate a Deployment/Service manifest or a Helm chart skeleton.
-  serve      Start the MCP server (stdio) for Cursor / Claude Desktop.
+  setup        Install missing prerequisites (kubectl, Helm, Ollama + model) via Homebrew/official scripts.
+  doctor       Check that everything needed (Python, kubectl, cluster, LLM) is ready to go.
+  scan         List/summarize currently failing pods in a cluster.
+  diagnose     Deep-dive a single pod: logs + events + LLM explanation + fixes.
+  open-ticket  Diagnose a pod and open a Jira bug ticket with the findings + recommended fix.
+  generate     Generate a Deployment/Service manifest or a Helm chart skeleton.
+  serve        Start the MCP server (stdio) for Cursor / Claude Desktop.
 """
 
 from __future__ import annotations
@@ -16,17 +16,20 @@ import platform
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from .fixer import AutoFixer, RuleBasedFixer
+from .fixer import RuleBasedFixer
+from .jira_client import JiraClient, JiraClientError, JiraConfig
 from .k8s_client import K8sClient, KubernetesClientError
 from .llm_client import LLMClient, LLMConfig
 from .log_analyzer import LogAnalyzer
 from .manifest_gen import DeploymentSpec, ManifestGenerator
+from .models import FixSuggestion, PodIssue
 
 app = typer.Typer(
     name="kube-assistant",
@@ -44,6 +47,67 @@ def _get_client(context: str | None) -> K8sClient:
     except KubernetesClientError as exc:
         console.print(f"[red]Cluster connection failed:[/red] {exc}")
         raise typer.Exit(code=1)
+
+
+@dataclass
+class DiagnosisResult:
+    issue: PodIssue
+    findings_summary: str
+    suggestions: list[FixSuggestion]
+    llm_explanation: str | None
+    llm_label: str | None
+
+
+def _diagnose_pod(
+    client: K8sClient,
+    pod_name: str,
+    namespace: str,
+    use_llm: bool,
+    llm_backend: str | None,
+    llm_model: str | None,
+) -> DiagnosisResult | None:
+    """Shared logic behind `diagnose` and `open-ticket`: fetch logs + events,
+    classify the failure, and (optionally) ask the LLM to explain it and
+    suggest fixes. Returns None if the pod has no detected issue.
+    """
+    issues = [i for i in client.find_failing_pods(namespace) if i.pod.name == pod_name]
+    if not issues:
+        return None
+
+    issue = issues[0]
+    logs = client.get_pod_logs(pod_name, namespace, container=issue.pod.container, previous=True)
+    if not logs:
+        logs = client.get_pod_logs(pod_name, namespace, container=issue.pod.container)
+    events = client.get_pod_events(pod_name, namespace)
+
+    analyzer = LogAnalyzer()
+    findings = analyzer.analyze(logs)
+    findings_summary = "; ".join(f"{f.pattern_name}: {f.description}" for f in findings)
+
+    suggestions = RuleBasedFixer().suggest(issue)
+    llm_explanation = None
+    llm_label = None
+
+    if use_llm:
+        config = LLMConfig.from_env()
+        if llm_backend:
+            config.backend = llm_backend
+        if llm_model:
+            config.model = llm_model
+        llm = LLMClient(config)
+        diagnosis = llm.diagnose(issue, logs, events, findings_summary)
+        llm_explanation = diagnosis.llm_explanation
+        llm_label = f"{config.backend}/{config.model}"
+        if diagnosis.suggestions:
+            suggestions = diagnosis.suggestions + suggestions
+
+    return DiagnosisResult(
+        issue=issue,
+        findings_summary=findings_summary,
+        suggestions=suggestions,
+        llm_explanation=llm_explanation,
+        llm_label=llm_label,
+    )
 
 
 @app.command()
@@ -92,119 +156,91 @@ def diagnose(
     and (optionally) ask the LLM to explain it and suggest fixes.
     """
     client = _get_client(context)
-    issues = [
-        i for i in client.find_failing_pods(namespace) if i.pod.name == pod_name
-    ]
-    if not issues:
+    result = _diagnose_pod(client, pod_name, namespace, use_llm, llm_backend, llm_model)
+    if result is None:
         console.print(
             f"[yellow]No known failure detected for pod '{pod_name}' in namespace "
             f"'{namespace}'. It may be healthy, or use a status this tool doesn't classify yet.[/yellow]"
         )
         raise typer.Exit(code=0)
 
-    issue = issues[0]
-    logs = client.get_pod_logs(pod_name, namespace, container=issue.pod.container, previous=True)
-    if not logs:
-        logs = client.get_pod_logs(pod_name, namespace, container=issue.pod.container)
-    events = client.get_pod_events(pod_name, namespace)
-
-    analyzer = LogAnalyzer()
-    findings = analyzer.analyze(logs)
-
-    console.print(f"\n[bold]{issue.summary()}[/bold]\n")
-    if findings:
+    console.print(f"\n[bold]{result.issue.summary()}[/bold]\n")
+    if result.findings_summary:
         console.print("[bold]Log pattern findings:[/bold]")
-        for f in findings:
-            console.print(f"  • {f.description} [dim]({f.pattern_name})[/dim]")
-            console.print(f"    [dim]{f.matched_line}[/dim]")
+        console.print(f"  {result.findings_summary}")
 
-    rule_fixer = RuleBasedFixer()
-    suggestions = rule_fixer.suggest(issue)
-
-    if use_llm:
-        config = LLMConfig.from_env()
-        if llm_backend:
-            config.backend = llm_backend
-        if llm_model:
-            config.model = llm_model
-        llm = LLMClient(config)
-        findings_summary = "; ".join(f"{f.pattern_name}: {f.description}" for f in findings)
-        diagnosis = llm.diagnose(issue, logs, events, findings_summary)
-        if diagnosis.llm_explanation:
-            console.print(f"\n[bold cyan]LLM explanation ({config.backend}/{config.model}):[/bold cyan]")
-            console.print(diagnosis.llm_explanation)
-        if diagnosis.suggestions:
-            suggestions = diagnosis.suggestions + suggestions
+    if result.llm_explanation:
+        console.print(f"\n[bold cyan]LLM explanation ({result.llm_label}):[/bold cyan]")
+        console.print(result.llm_explanation)
 
     console.print("\n[bold]Suggested fixes:[/bold]")
-    for idx, s in enumerate(suggestions, 1):
+    for idx, s in enumerate(result.suggestions, 1):
         console.print(f"\n[bold]{idx}. {s.title}[/bold]  [dim](risk: {s.risk.value})[/dim]")
         console.print(f"   {s.explanation}")
         for cmd in s.commands:
             console.print(f"   [green]$ {cmd}[/green]")
 
     console.print(
-        "\n[dim]Tip: run `kube-assistant fix "
-        f"{pod_name} -n {namespace}` to apply a suggestion interactively.[/dim]"
+        "\n[dim]Tip: run `kube-assistant open-ticket "
+        f"{pod_name} -n {namespace}` to hand this off to Jira for someone with "
+        "cluster write access.[/dim]"
     )
 
 
-@app.command()
-def fix(
-    pod_name: str = typer.Argument(...),
+@app.command("open-ticket")
+def open_ticket(
+    pod_name: str = typer.Argument(..., help="Name of the pod to diagnose and file a ticket for."),
     namespace: str = typer.Option("default", "--namespace", "-n"),
     context: str | None = typer.Option(None, "--context"),
-    strategy: str = typer.Option(
-        "restart", "--strategy", help="restart | memory-patch"
-    ),
-    memory_limit: str = typer.Option("1Gi", "--memory-limit", help="Used with --strategy memory-patch"),
-    memory_request: str = typer.Option("256Mi", "--memory-request"),
-    deployment: str | None = typer.Option(None, "--deployment", help="Deployment name (memory-patch)."),
-    dry_run: bool = typer.Option(True, "--dry-run/--no-dry-run", help="Preview only, default on."),
+    use_llm: bool = typer.Option(True, "--llm/--no-llm", help="Ask the local/remote LLM for an explanation."),
+    llm_backend: str | None = typer.Option(None, "--llm-backend", help="ollama | openai | anthropic | gemini | groq"),
+    llm_model: str | None = typer.Option(None, "--llm-model"),
+    project: str | None = typer.Option(None, "--project", help="Jira project key (overrides JIRA_PROJECT_KEY)."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the interactive confirmation prompt."),
 ):
-    """Apply a fix to a failing pod. Always dry-runs unless --no-dry-run is
-    passed, and always asks for interactive confirmation unless --yes is set.
+    """Diagnose a pod and open a Jira bug ticket with the root cause and a
+    recommended fix, for an engineer with cluster write access to action.
+    This tool never touches the cluster itself — read-only, always.
     """
     client = _get_client(context)
-    autofixer = AutoFixer(client)
-
-    issues = [i for i in client.find_failing_pods(namespace) if i.pod.name == pod_name]
-    if not issues:
-        console.print(f"[yellow]Pod '{pod_name}' has no detected issue; nothing to fix.[/yellow]")
+    result = _diagnose_pod(client, pod_name, namespace, use_llm, llm_backend, llm_model)
+    if result is None:
+        console.print(f"[yellow]Pod '{pod_name}' has no detected issue; nothing to file.[/yellow]")
         raise typer.Exit(code=0)
-    issue = issues[0]
 
-    if strategy == "restart":
-        plan = autofixer.plan_restart(issue)
-    elif strategy == "memory-patch":
-        if not deployment:
-            console.print("[red]--deployment is required for --strategy memory-patch[/red]")
-            raise typer.Exit(code=1)
-        plan = autofixer.plan_resource_patch(
-            deployment, namespace, issue.pod.container or "app", memory_limit, memory_request
-        )
-    else:
-        console.print(f"[red]Unknown strategy: {strategy}[/red]")
-        raise typer.Exit(code=1)
+    issue = result.issue
+    summary = f"[{issue.severity.value}] {issue.issue_type.value} in {namespace}/{pod_name}"
+    description = result.llm_explanation or result.findings_summary or "No pattern match; manual log review needed."
+    fix_text = "\n".join(f"- {s.title}: {s.explanation}" for s in result.suggestions) or (
+        "No automatic suggestion; manual investigation required."
+    )
 
-    console.print(f"[bold]Plan:[/bold] {plan.description}")
-    console.print(f"[dim]Risk level: {plan.risk.value}[/dim]")
-
-    if dry_run:
-        result = autofixer.apply(plan, dry_run=True, confirm=False)
-        console.print(result)
-        console.print("[dim]Re-run with --no-dry-run to actually apply this.[/dim]")
-        return
+    console.print("\n[bold]Ticket preview[/bold]")
+    console.print(f"[bold]Summary:[/bold] {summary}")
+    console.print(f"[bold]Description:[/bold] {description}")
+    console.print(f"[bold]Recommended fix:[/bold]\n{fix_text}")
 
     if not yes:
-        confirmed = typer.confirm("Apply this change to the live cluster?")
+        confirmed = typer.confirm("\nOpen this ticket in Jira?")
         if not confirmed:
             console.print("Aborted.")
             raise typer.Exit(code=0)
 
-    result = autofixer.apply(plan, dry_run=False, confirm=True)
-    console.print(f"[green]{result}[/green]")
+    try:
+        jira = JiraClient(JiraConfig.from_env())
+        opened = jira.create_issue(
+            summary=summary,
+            description=(
+                f"Pod: {namespace}/{pod_name}\nSeverity: {issue.severity.value}\n\n"
+                f"Investigation summary:\n{description}\n\nRecommended fix:\n{fix_text}"
+            ),
+            project_key=project,
+        )
+    except JiraClientError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+
+    console.print(f"\n[green]Opened {opened['key']}: {opened['url']}[/green]")
 
 
 @app.command()

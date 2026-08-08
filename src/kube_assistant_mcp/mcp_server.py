@@ -12,7 +12,8 @@ from __future__ import annotations
 
 from fastmcp import FastMCP
 
-from .fixer import AutoFixer, RuleBasedFixer
+from .fixer import RuleBasedFixer
+from .jira_client import JiraClient, JiraClientError, JiraConfig
 from .k8s_client import K8sClient, KubernetesClientError
 from .llm_client import LLMClient, LLMConfig
 from .log_analyzer import LogAnalyzer
@@ -21,10 +22,12 @@ from .manifest_gen import DeploymentSpec, ManifestGenerator
 mcp = FastMCP(
     name="kube-assistant-mcp",
     instructions=(
-        "Tools for diagnosing and fixing failing Kubernetes workloads. "
-        "Always call list_failing_pods before diagnose_pod so you know which "
-        "namespace/pod to target. Mutating tools (apply_fix) default to "
-        "dry-run and require an explicit confirm=true to actually change the cluster."
+        "Tools for diagnosing failing Kubernetes workloads. This server is "
+        "read-only against the cluster — it never mutates it. Always call "
+        "list_failing_pods before diagnose_pod so you know which "
+        "namespace/pod to target. Once you have a diagnosis, if a human with "
+        "cluster write access needs to act on it, call open_jira_ticket with "
+        "a clear summary, description of the root cause, and recommended fix."
     ),
 )
 
@@ -137,44 +140,49 @@ def diagnose_pod(
 
 
 @mcp.tool()
-def apply_fix(
+def open_jira_ticket(
     pod_name: str,
+    summary: str,
+    description: str,
+    recommended_fix: str,
     namespace: str = "default",
-    strategy: str = "restart",
-    deployment_name: str | None = None,
-    memory_limit: str = "1Gi",
-    memory_request: str = "256Mi",
-    confirm: bool = False,
-    context: str | None = None,
-) -> str:
-    """Apply a fix to a failing pod. strategy is 'restart' (delete the pod so
-    its controller recreates it) or 'memory-patch' (raise the memory
-    limit/request on the owning Deployment — requires deployment_name).
+    severity: str = "medium",
+    labels: list[str] | None = None,
+) -> dict:
+    """Open a Jira bug ticket documenting a Kubernetes issue this server
+    investigated. This server has read-only cluster access and never applies
+    fixes itself — use this tool to hand the investigation off to a human
+    with write access, once you've already run diagnose_pod and have a clear
+    root cause and recommended fix to report.
 
-    SAFETY: this defaults to a dry run. It only mutates the cluster when
-    confirm=true is explicitly passed by the caller. Always show the plan
-    to the human and get their explicit go-ahead before passing confirm=true.
+    summary: short one-line ticket title, e.g. "OOMKilled: payments-api in prod".
+    description: plain-language root cause, based on the diagnose_pod output.
+    recommended_fix: concrete, actionable remediation (e.g. the fix commands
+    diagnose_pod suggested), so whoever picks up the ticket can act on it directly.
+    severity: 'low' | 'medium' | 'high' | 'critical' — included in the ticket body.
     """
-    client = _client(context)
-    autofixer = AutoFixer(client)
+    ticket_description = (
+        f"Pod: {namespace}/{pod_name}\n"
+        f"Severity: {severity}\n\n"
+        f"Investigation summary:\n{description}\n\n"
+        f"Recommended fix:\n{recommended_fix}\n\n"
+        "---\n"
+        "Opened automatically by kube-assistant-mcp. This environment grants "
+        "read-only cluster access, so an engineer with write access needs to "
+        "apply the fix above."
+    )
 
-    issues = [i for i in client.find_failing_pods(namespace) if i.pod.name == pod_name]
-    if not issues:
-        return f"No detected issue for pod {namespace}/{pod_name}; nothing to fix."
-    issue = issues[0]
-
-    if strategy == "restart":
-        plan = autofixer.plan_restart(issue)
-    elif strategy == "memory-patch":
-        if not deployment_name:
-            return "deployment_name is required for the memory-patch strategy."
-        plan = autofixer.plan_resource_patch(
-            deployment_name, namespace, issue.pod.container or "app", memory_limit, memory_request
+    try:
+        jira = JiraClient(JiraConfig.from_env())
+        result = jira.create_issue(
+            summary=summary,
+            description=ticket_description,
+            labels=labels,
         )
-    else:
-        return f"Unknown strategy: {strategy!r}. Use 'restart' or 'memory-patch'."
+    except JiraClientError as exc:
+        return {"error": str(exc)}
 
-    return autofixer.apply(plan, dry_run=not confirm, confirm=confirm)
+    return result
 
 
 @mcp.tool()

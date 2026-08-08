@@ -2,12 +2,14 @@
 
 **Agentic Kubernetes troubleshooting — as a CLI and as an MCP server.**
 
-`kube-assistant-mcp` connects a local LLM (via [Ollama](https://ollama.com)) or a hosted one (OpenAI-compatible) to your Kubernetes cluster. It scans for failing Pods (`CrashLoopBackOff`, `OOMKilled`, `ImagePullBackOff`, ...), correlates logs + events, explains the root cause in plain language, and proposes concrete, runnable fixes — or generates ready-to-use Deployment/Helm manifests.
+`kube-assistant-mcp` connects a local LLM (via [Ollama](https://ollama.com)) or a hosted one (OpenAI-compatible) to your Kubernetes cluster. It scans for failing Pods (`CrashLoopBackOff`, `OOMKilled`, `ImagePullBackOff`, ...), correlates logs + events, and explains the root cause in plain language — or generates ready-to-use Deployment/Helm manifests.
+
+It's built for **tier 1/2 support engineers** who get limited, read-only cluster access and aren't trained or authorized to change Kubernetes resources themselves. This tool never mutates the cluster it's pointed at — instead, once it has a diagnosis, it can open a **Jira bug ticket** with the root cause and a recommended fix, so an engineer with write access can act on it. That turns "I don't know k8s well enough to fix this safely" into a five-minute, well-documented handoff instead of a blocked ticket queue.
 
 It ships two ways to use it:
 
-- **CLI** — `kube-assistant scan / diagnose / fix / generate`
-- **MCP server** — the same capabilities exposed as tools for **Cursor** or **Claude Desktop**, so an AI agent can diagnose and (with your explicit confirmation) fix your cluster in natural language.
+- **CLI** — `kube-assistant scan / diagnose / open-ticket / generate`
+- **MCP server** — the same capabilities exposed as tools for **Cursor** or **Claude Desktop**, so an AI agent can diagnose your cluster and file the ticket in natural language.
 
 ```
 $ kube-assistant scan -n production
@@ -28,7 +30,7 @@ Debugging a failing Pod is a repetitive, mechanical loop: `describe` → `logs -
 - **Detection** — classifies container states (`waiting`/`terminated` reasons) into known failure types with a severity score.
 - **Log analysis** — regex-based pattern matching for common root causes (OOM, connection refused, DNS failure, missing env vars, permission errors, bad config, port conflicts, unhandled exceptions) — works even with the LLM turned off.
 - **LLM diagnosis** — sends a compact, structured JSON payload (issue + log tail + recent events) to Ollama or an OpenAI-compatible endpoint and gets back a plain-language explanation plus a list of concrete fixes.
-- **Guarded auto-fix** — every mutating action (pod restart, resource patch) is dry-run by default and requires an **explicit** `confirm=True` / `--yes` before it touches the cluster.
+- **Jira ticket creation** — once a pod is diagnosed, open a Jira bug ticket with the root cause and a recommended fix in one call — the cluster itself is never touched.
 - **Manifest generation** — emits a Deployment+Service YAML pair, or a minimal, valid Helm chart skeleton.
 - **MCP server** — built with [FastMCP](https://github.com/jlowin/fastmcp); drop it into Cursor or Claude Desktop and diagnose your cluster conversationally.
 
@@ -82,15 +84,10 @@ kube-assistant diagnose api-7f8c9d -n production
 # Same, but skip the LLM call and only use the rule-based fixes
 kube-assistant diagnose api-7f8c9d -n production --no-llm
 
-# Preview a fix (default: dry-run, no cluster mutation)
-kube-assistant fix api-7f8c9d -n production --strategy restart
-
-# Actually apply it (still asks for interactive confirmation unless -y)
-kube-assistant fix api-7f8c9d -n production --strategy restart --no-dry-run
-
-# Raise a Deployment's memory limit
-kube-assistant fix api-7f8c9d -n production --strategy memory-patch \
-    --deployment api --memory-limit 1Gi --no-dry-run
+# Diagnose, then open a Jira bug ticket with the root cause + recommended
+# fix (asks for interactive confirmation unless -y). Requires Jira config —
+# see "Jira configuration" below.
+kube-assistant open-ticket api-7f8c9d -n production
 
 # Generate a plain manifest or a Helm chart
 kube-assistant generate myapp --image myrepo/myapp:1.4.0 --kind manifest
@@ -119,7 +116,7 @@ Or point your MCP client config at it. Example for Claude Desktop
 }
 ```
 
-Exposed tools: `list_failing_pods`, `get_pod_logs`, `diagnose_pod`, `apply_fix` (dry-run by default, needs `confirm=true`), `generate_manifest`.
+Exposed tools: `list_failing_pods`, `get_pod_logs`, `diagnose_pod`, `open_jira_ticket`, `generate_manifest`. None of these mutate the cluster — the server is read-only.
 
 ## Configuration
 
@@ -163,11 +160,33 @@ Adding a sixth provider is one small class in `llm_client.py`: subclass
 `LLMBackend` (or `OpenAICompatibleBackend` if it speaks the OpenAI chat
 shape) and register it in `_BACKEND_CLASSES`.
 
+### Jira configuration
+
+`open_jira_ticket` (MCP tool) and `kube-assistant open-ticket` (CLI) file a
+ticket in **Jira Cloud**. Set these env vars:
+
+| Env var | Required | Purpose |
+|---|---|---|
+| `JIRA_URL` | yes | Your Jira Cloud site, e.g. `https://yourcompany.atlassian.net` |
+| `JIRA_EMAIL` | yes | Account email tied to the API token |
+| `JIRA_API_TOKEN` | yes | API token — create one at [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens) |
+| `JIRA_PROJECT_KEY` | yes | Default project to file tickets in, e.g. `OPS` (the CLI's `--project` flag overrides this per call) |
+| `JIRA_ISSUE_TYPE` | no (default `Bug`) | Issue type name, must exist in the target project |
+| `JIRA_TIMEOUT` | no (default `30`) | Request timeout in seconds |
+
+```bash
+export JIRA_URL=https://yourcompany.atlassian.net
+export JIRA_EMAIL=you@yourcompany.com
+export JIRA_API_TOKEN=ATATT3x...
+export JIRA_PROJECT_KEY=OPS
+kube-assistant open-ticket api-7f8c9d -n production
+```
+
 ## Architecture
 
 ```
 CLI (Typer) ──┐
-              ├──> K8sClient (kubernetes python client)
+              ├──> K8sClient (kubernetes python client, read-only)
 MCP (FastMCP)─┘         │
                          ▼
                   LogAnalyzer (regex patterns)
@@ -176,7 +195,7 @@ MCP (FastMCP)─┘         │
               RuleBasedFixer  +  LLMClient (Ollama / OpenAI)
                          │
                          ▼
-                 AutoFixer (dry-run gated apply)
+                JiraClient (opens a bug ticket, never touches the cluster)
                          │
                          ▼
                 ManifestGenerator (YAML / Helm)
@@ -195,12 +214,30 @@ The test suite mocks the Kubernetes API and the LLM backend, so `pytest` runs wi
 
 ## Safety notes
 
-This tool can delete Pods and patch Deployments. It is designed defensively:
-- Every write path defaults to `dry_run=True`.
-- A mutation only happens when the caller passes both `dry_run=False` **and** `confirm=True` (CLI: `--no-dry-run` + interactive confirm or `--yes`; MCP: `confirm=true`).
-- It never deletes namespaces, PVCs, or Secrets.
+This tool is **read-only against the cluster** — it never deletes, patches,
+or otherwise mutates anything it's pointed at. It only ever calls `list`,
+`get`, `logs`, and `events` against the Kubernetes API, and the only
+externally-visible side effect it can produce at all is opening a Jira
+ticket (an explicit, separate call — `open_jira_ticket` / `open-ticket`).
 
-Still, review the generated plan before confirming, especially in production namespaces.
+This is intentional: the tool is designed for support tiers who have
+limited, read-only cluster access by policy, not as an implementation
+detail. A minimal RBAC `ClusterRole` covering everything this tool needs:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kube-assistant-readonly
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events", "namespaces"]
+    verbs: ["get", "list", "watch"]
+```
+
+Bind that (not `edit`/`admin`) to the ServiceAccount or user running
+`kube-assistant`/the MCP server, and there is no code path — bug or
+otherwise — that can change your cluster's state.
 
 ## License
 
