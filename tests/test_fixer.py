@@ -17,6 +17,16 @@ def test_rule_fixer_returns_oom_suggestion():
     assert any("memory" in s.title.lower() for s in suggestions)
 
 
+def test_rule_fixer_oom_suggestion_includes_exact_manifest_lines():
+    fixer = RuleBasedFixer()
+    suggestions = fixer.suggest(_issue(IssueType.OOM_KILLED))
+    manifest = suggestions[0].manifest_yaml
+    assert manifest is not None
+    assert "name: app" in manifest
+    assert "resources:" in manifest
+    assert "memory:" in manifest
+
+
 def test_rule_fixer_returns_crash_loop_suggestions():
     fixer = RuleBasedFixer()
     suggestions = fixer.suggest(_issue(IssueType.CRASH_LOOP_BACKOFF))

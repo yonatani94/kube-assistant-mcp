@@ -24,6 +24,7 @@ class RuleBasedFixer:
         return method(issue)
 
     def _suggest_oom_killed(self, issue: PodIssue) -> list[FixSuggestion]:
+        container = issue.pod.container or "app"
         return [
             FixSuggestion(
                 title="Raise the container memory limit",
@@ -35,9 +36,21 @@ class RuleBasedFixer:
                 commands=[
                     (
                         f"kubectl -n {issue.pod.namespace} set resources deployment/<deployment> "
-                        f"-c={issue.pod.container} --limits=memory=1Gi --requests=memory=256Mi"
+                        f"-c={container} --limits=memory=1Gi --requests=memory=256Mi"
                     )
                 ],
+                manifest_yaml=(
+                    "spec:\n"
+                    "  template:\n"
+                    "    spec:\n"
+                    "      containers:\n"
+                    f"        - name: {container}\n"
+                    "          resources:\n"
+                    "            requests:\n"
+                    '              memory: "256Mi"  # was lower; raise if this still OOMs\n'
+                    "            limits:\n"
+                    '              memory: "1Gi"     # was hit at the previous limit; raise headroom\n'
+                ),
                 risk=Severity.MEDIUM,
             )
         ]

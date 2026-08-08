@@ -13,7 +13,7 @@ from __future__ import annotations
 from fastmcp import FastMCP
 
 from .fixer import RuleBasedFixer
-from .jira_client import JiraClient, JiraClientError, JiraConfig
+from .jira_client import JiraClient, JiraClientError, JiraConfig, build_ticket_markdown, severity_to_priority
 from .k8s_client import K8sClient, KubernetesClientError
 from .llm_client import LLMClient, LLMConfig
 from .log_analyzer import LogAnalyzer
@@ -121,7 +121,13 @@ def diagnose_pod(
             for f in findings
         ],
         "rule_based_fixes": [
-            {"title": s.title, "explanation": s.explanation, "commands": s.commands, "risk": s.risk.value}
+            {
+                "title": s.title,
+                "explanation": s.explanation,
+                "commands": s.commands,
+                "manifest_yaml": s.manifest_yaml,
+                "risk": s.risk.value,
+            }
             for s in rule_suggestions
         ],
     }
@@ -132,7 +138,13 @@ def diagnose_pod(
         diagnosis = llm.diagnose(issue, logs, events, summary)
         result["llm_explanation"] = diagnosis.llm_explanation
         result["llm_fixes"] = [
-            {"title": s.title, "explanation": s.explanation, "commands": s.commands, "risk": s.risk.value}
+            {
+                "title": s.title,
+                "explanation": s.explanation,
+                "commands": s.commands,
+                "manifest_yaml": s.manifest_yaml,
+                "risk": s.risk.value,
+            }
             for s in diagnosis.suggestions
         ]
 
@@ -155,22 +167,24 @@ def open_jira_ticket(
     with write access, once you've already run diagnose_pod and have a clear
     root cause and recommended fix to report.
 
+    Write this like a ticket a senior SRE would file, not a chat reply —
+    specific and directly actionable, no filler.
+
     summary: short one-line ticket title, e.g. "OOMKilled: payments-api in prod".
-    description: plain-language root cause, based on the diagnose_pod output.
-    recommended_fix: concrete, actionable remediation (e.g. the fix commands
-    diagnose_pod suggested), so whoever picks up the ticket can act on it directly.
-    severity: 'low' | 'medium' | 'high' | 'critical' — included in the ticket body.
+    description: the root cause, in plain language, based on the diagnose_pod
+    output (issue type, restart count, log findings) — 2-4 sentences, not a
+    guess. Say what you don't know if the evidence is inconclusive.
+    recommended_fix: concrete, actionable remediation. Reuse diagnose_pod's
+    `manifest_yaml` (the exact lines to change) and `commands` verbatim where
+    available. You may use light Markdown here — fenced ```yaml / ```bash
+    blocks render as real code blocks in the ticket, and `- ` lines render as
+    a bullet list, so use them for exact commands/manifest snippets instead
+    of prose.
+    severity: 'low' | 'medium' | 'high' | 'critical' — also sets the ticket's
+    Jira Priority field (not just noted in the text).
     """
-    ticket_description = (
-        f"Pod: {namespace}/{pod_name}\n"
-        f"Severity: {severity}\n\n"
-        f"Investigation summary:\n{description}\n\n"
-        f"Recommended fix:\n{recommended_fix}\n\n"
-        "---\n"
-        "Opened automatically by kube-assistant-mcp. This environment grants "
-        "read-only cluster access, so an engineer with write access needs to "
-        "apply the fix above."
-    )
+    priority = severity_to_priority(severity)
+    ticket_description = build_ticket_markdown(pod_name, namespace, severity, description, recommended_fix)
 
     try:
         jira = JiraClient(JiraConfig.from_env())
@@ -178,6 +192,7 @@ def open_jira_ticket(
             summary=summary,
             description=ticket_description,
             labels=labels,
+            priority=priority,
         )
     except JiraClientError as exc:
         return {"error": str(exc)}
