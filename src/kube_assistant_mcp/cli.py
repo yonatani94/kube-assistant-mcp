@@ -1,6 +1,7 @@
 """kube-assistant CLI — Typer app.
 
 Commands:
+  setup      Install missing prerequisites (kubectl, Helm, Ollama + model) via Homebrew/official scripts.
   doctor     Check that everything needed (Python, kubectl, cluster, LLM) is ready to go.
   scan       List/summarize currently failing pods in a cluster.
   diagnose   Deep-dive a single pod: logs + events + LLM explanation + fixes.
@@ -11,7 +12,9 @@ Commands:
 
 from __future__ import annotations
 
+import platform
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -82,14 +85,16 @@ def diagnose(
     namespace: str = typer.Option("default", "--namespace", "-n"),
     context: str | None = typer.Option(None, "--context"),
     use_llm: bool = typer.Option(True, "--llm/--no-llm", help="Ask the local/remote LLM for an explanation."),
-    llm_backend: str | None = typer.Option(None, "--llm-backend", help="ollama | openai"),
+    llm_backend: str | None = typer.Option(None, "--llm-backend", help="ollama | openai | anthropic | gemini | groq"),
     llm_model: str | None = typer.Option(None, "--llm-model"),
 ):
     """Deep-dive a single pod: fetch logs + events, classify the failure,
     and (optionally) ask the LLM to explain it and suggest fixes.
     """
     client = _get_client(context)
-    issues = [i for i in client.find_failing_pods(namespace) if i.pod.name == pod_name]
+    issues = [
+        i for i in client.find_failing_pods(namespace) if i.pod.name == pod_name
+    ]
     if not issues:
         console.print(
             f"[yellow]No known failure detected for pod '{pod_name}' in namespace "
@@ -149,7 +154,9 @@ def fix(
     pod_name: str = typer.Argument(...),
     namespace: str = typer.Option("default", "--namespace", "-n"),
     context: str | None = typer.Option(None, "--context"),
-    strategy: str = typer.Option("restart", "--strategy", help="restart | memory-patch"),
+    strategy: str = typer.Option(
+        "restart", "--strategy", help="restart | memory-patch"
+    ),
     memory_limit: str = typer.Option("1Gi", "--memory-limit", help="Used with --strategy memory-patch"),
     memory_request: str = typer.Option("256Mi", "--memory-request"),
     deployment: str | None = typer.Option(None, "--deployment", help="Deployment name (memory-patch)."),
@@ -208,7 +215,7 @@ def generate(
     port: int = typer.Option(8080, "--port"),
     replicas: int = typer.Option(1, "--replicas"),
     kind_: str = typer.Option("manifest", "--kind", help="manifest | helm"),
-    output: Path = typer.Option(_DEFAULT_OUTPUT_DIR, "--output", "-o"),  # noqa: B008
+    output: Path = typer.Option(_DEFAULT_OUTPUT_DIR, "--output", "-o"),
 ):
     """Generate a plain Deployment+Service manifest, or a minimal Helm chart."""
     spec = DeploymentSpec(name=name, namespace=namespace, image=image, container_port=port, replicas=replicas)
@@ -229,6 +236,132 @@ def generate(
     else:
         console.print(f"[red]Unknown --kind: {kind_} (expected 'manifest' or 'helm')[/red]")
         raise typer.Exit(code=1)
+
+
+@app.command()
+def setup(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Run all needed installs without asking for confirmation."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Only print what would be installed; install nothing."),
+    skip_helm: bool = typer.Option(False, "--skip-helm", help="Don't install Helm."),
+    skip_ollama: bool = typer.Option(False, "--skip-ollama", help="Don't install Ollama or pull a model."),
+    model: str | None = typer.Option(
+        None, "--model", help="Ollama model to pull. Defaults to KUBE_ASSISTANT_LLM_MODEL or 'llama3.1'."
+    ),
+):
+    """Install missing prerequisites: kubectl, Helm, and Ollama (+ pull a model).
+
+    Detects what `doctor` would flag as missing, builds an install plan using
+    Homebrew (macOS) or the official install scripts (Linux), shows you the
+    exact commands, and asks for confirmation before running anything. kubectl
+    isn't auto-installed on Linux (too distro-specific) — you'll get a link
+    instead. Run `kube-assistant doctor` afterwards to confirm everything is
+    ready.
+    """
+    system = platform.system()  # "Darwin" | "Linux" | "Windows"
+    console.print(f"[bold]kube-assistant setup[/bold] — detected platform: {system}\n")
+
+    if system not in ("Darwin", "Linux"):
+        console.print(
+            f"[red]Automated setup isn't supported on {system}.[/red] "
+            "See PREREQUISITES.md for manual install instructions."
+        )
+        raise typer.Exit(code=1)
+
+    is_mac = system == "Darwin"
+    if is_mac and shutil.which("brew") is None:
+        console.print(
+            "[red]Homebrew isn't installed[/red], and it's needed for automated setup on macOS.\n"
+            'Install it first: /bin/bash -c "$(curl -fsSL '
+            'https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"\n'
+            "Then re-run `kube-assistant setup`."
+        )
+        raise typer.Exit(code=1)
+
+    plan: list[tuple[str, list[str]]] = []
+
+    # --- kubectl ---
+    if shutil.which("kubectl") is None:
+        if is_mac:
+            plan.append(("Install kubectl (Homebrew)", ["brew", "install", "kubectl"]))
+        else:
+            console.print(
+                "[yellow]kubectl isn't installed.[/yellow] Linux installs are distro-specific — see "
+                "https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/ and re-run doctor after."
+            )
+    else:
+        console.print("[dim]kubectl already installed, skipping.[/dim]")
+
+    # --- Helm (optional) ---
+    if not skip_helm:
+        if shutil.which("helm") is None:
+            if is_mac:
+                plan.append(("Install Helm (Homebrew)", ["brew", "install", "helm"]))
+            else:
+                plan.append(
+                    (
+                        "Install Helm (official script)",
+                        ["bash", "-c", "curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash"],
+                    )
+                )
+        else:
+            console.print("[dim]helm already installed, skipping.[/dim]")
+
+    # --- Ollama ---
+    if not skip_ollama and shutil.which("ollama") is None:
+        if is_mac:
+            plan.append(("Install Ollama (Homebrew)", ["brew", "install", "ollama"]))
+        else:
+            plan.append(
+                ("Install Ollama (official script)", ["bash", "-c", "curl -fsSL https://ollama.com/install.sh | sh"])
+            )
+    elif not skip_ollama:
+        console.print("[dim]ollama already installed, skipping.[/dim]")
+
+    if plan:
+        console.print("\n[bold]Planned installs:[/bold]")
+        for desc, cmd in plan:
+            console.print(f"  • {desc}: [green]{' '.join(cmd)}[/green]")
+    else:
+        console.print("\n[dim]Nothing to install via a package manager.[/dim]")
+
+    if dry_run:
+        console.print("\n[dim]Dry run — nothing was installed.[/dim]")
+    elif plan:
+        if not yes:
+            proceed = typer.confirm("\nRun these installs now?")
+            if not proceed:
+                console.print("Aborted. Nothing installed.")
+                raise typer.Exit(code=0)
+        for desc, cmd in plan:
+            console.print(f"\n[dim]Running: {' '.join(cmd)}[/dim]")
+            result = subprocess.run(cmd)
+            if result.returncode != 0:
+                console.print(f"[red]Failed: {desc} (exit code {result.returncode})[/red]")
+
+    # --- Pull the Ollama model ---
+    if not skip_ollama and shutil.which("ollama") is not None:
+        resolved_model = model or LLMConfig.from_env().model
+        console.print(f"\n[bold]Checking Ollama model '{resolved_model}'...[/bold]")
+        list_result = subprocess.run(["ollama", "list"], capture_output=True, text=True)
+        have_model = list_result.returncode == 0 and resolved_model in list_result.stdout
+
+        if have_model:
+            console.print(f"[dim]Model '{resolved_model}' already pulled.[/dim]")
+        elif dry_run:
+            console.print(f"[dim]Would run: ollama pull {resolved_model}[/dim]")
+        else:
+            pull_now = yes or typer.confirm(
+                f"Pull the '{resolved_model}' model now? (several GB, can take a few minutes)"
+            )
+            if pull_now:
+                pull_result = subprocess.run(["ollama", "pull", resolved_model])
+                if pull_result.returncode != 0:
+                    console.print(
+                        "[red]Failed to pull the model.[/red] Is the Ollama server running? "
+                        "Try `ollama serve` in another terminal, then re-run `kube-assistant setup`."
+                    )
+
+    console.print("\n[bold]Setup pass complete.[/bold] Run [green]kube-assistant doctor[/green] to verify.")
 
 
 @app.command()
@@ -323,19 +456,18 @@ def doctor(
     else:
         import os
 
-        has_key = bool(os.environ.get("OPENAI_API_KEY"))
+        env_var = llm_config.required_api_key_env() or "KUBE_ASSISTANT_LLM_API_KEY"
+        has_key = bool(os.environ.get(env_var))
         row(
-            "OpenAI API key set",
+            f"{llm_config.backend} API key set",
             has_key,
-            "OPENAI_API_KEY is set" if has_key else "export OPENAI_API_KEY=sk-...",
+            f"{env_var} is set" if has_key else f"export {env_var}=...",
         )
 
     console.print(table)
 
     if all_ok:
-        console.print(
-            "\n[bold green]Everything looks ready.[/bold green] Try: [green]kube-assistant scan[/green]"
-        )
+        console.print("\n[bold green]Everything looks ready.[/bold green] Try: [green]kube-assistant scan[/green]")
     else:
         console.print(
             "\n[bold yellow]Some checks failed.[/bold yellow] Fix the items marked "

@@ -38,7 +38,8 @@ Debugging a failing Pod is a repetitive, mechanical loop: `describe` → `logs -
 
 ```bash
 pip install kube-assistant-mcp
-kube-assistant doctor       # checks Python/kubectl/cluster/Ollama and tells you what's missing
+kube-assistant setup       # installs missing prerequisites (kubectl, Helm, Ollama + model) via Homebrew/official scripts
+kube-assistant doctor      # verifies everything is ready
 ```
 
 ### Option B — from source (one command)
@@ -46,18 +47,25 @@ kube-assistant doctor       # checks Python/kubectl/cluster/Ollama and tells you
 ```bash
 git clone https://github.com/yonatani94/kube-assistant-mcp
 cd kube-assistant-mcp
-make setup                  # creates a venv, installs everything, runs the doctor check
+make setup                  # creates a venv, installs the Python package, runs the doctor check
 source .venv/bin/activate
+kube-assistant setup        # installs missing system tools (kubectl/Helm/Ollama) — different from `make setup` above
 ```
 
-Either way, `kube-assistant doctor` is the entry point: it verifies Python 3.10+,
-`kubectl` + cluster connectivity, and your configured LLM backend (Ollama or
-OpenAI) in one shot, and tells you exactly what to install or run next —
-no guessing required.
+`make setup` bootstraps the *Python* side (venv + package). `kube-assistant setup`
+installs the *system* prerequisites the package needs to actually talk to a
+cluster and an LLM. Either way, `kube-assistant doctor` is the always-safe,
+read-only check: it verifies Python 3.10+, `kubectl` + cluster connectivity,
+and your configured LLM backend (Ollama or OpenAI), and tells you exactly
+what's missing. `kube-assistant setup` is the read-write counterpart — it
+offers to actually install what's missing (with a dry-run mode and a
+confirmation prompt before anything runs).
 
 Requires Python 3.10+ and a working `kubeconfig` (the same one `kubectl` uses).
-For LLM-powered diagnosis, either run [Ollama](https://ollama.com) locally
-(`ollama pull llama3.1`) or export `OPENAI_API_KEY` and pass `--llm-backend openai`.
+For LLM-powered diagnosis, run [Ollama](https://ollama.com) locally
+(`ollama pull llama3.1`, the default — no API key needed), or point at a
+hosted provider instead: OpenAI, Anthropic (Claude), Google Gemini, or Groq —
+see [Configuration](#configuration) below.
 
 New to any of this? See **[PREREQUISITES.md](PREREQUISITES.md)** for full install
 instructions (Python, kubectl, Ollama) and a hardware/model-size guide.
@@ -115,12 +123,45 @@ Exposed tools: `list_failing_pods`, `get_pod_logs`, `diagnose_pod`, `apply_fix` 
 
 ## Configuration
 
+kube-assistant supports five LLM backends. Set `KUBE_ASSISTANT_LLM_BACKEND`
+to pick one — everything else (model default, which API key to read) follows
+automatically:
+
+| Backend | `KUBE_ASSISTANT_LLM_BACKEND` | API key env var | Default model |
+|---|---|---|---|
+| Ollama (local, default) | `ollama` | *none needed* | `llama3.1` |
+| OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-4o-mini` |
+| Anthropic (Claude) | `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-5` |
+| Google Gemini | `gemini` | `GEMINI_API_KEY` | `gemini-2.0-flash` |
+| Groq | `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
+
+```bash
+# Example: use Claude instead of a local model
+export KUBE_ASSISTANT_LLM_BACKEND=anthropic
+export ANTHROPIC_API_KEY=sk-ant-...
+kube-assistant diagnose <pod> -n <namespace>
+
+# Or per-command, without changing your shell's defaults:
+kube-assistant diagnose <pod> --llm-backend gemini --llm-model gemini-2.0-flash
+```
+
+Other env vars:
+
 | Env var | Default | Purpose |
 |---|---|---|
-| `KUBE_ASSISTANT_LLM_BACKEND` | `ollama` | `ollama` or `openai` |
-| `KUBE_ASSISTANT_LLM_MODEL` | `llama3.1` | Model name |
-| `KUBE_ASSISTANT_LLM_BASE_URL` | `http://localhost:11434` | Ollama endpoint |
-| `OPENAI_API_KEY` | — | Required when backend=`openai` |
+| `KUBE_ASSISTANT_LLM_MODEL` | *(per-backend, see table above)* | Overrides the default model for whichever backend is active |
+| `KUBE_ASSISTANT_LLM_BASE_URL` | `http://localhost:11434` | Ollama endpoint only |
+| `KUBE_ASSISTANT_LLM_API_KEY` | — | Generic override — takes priority over the backend-specific key env var above |
+| `KUBE_ASSISTANT_LLM_TIMEOUT` | `60` | Request timeout in seconds |
+
+Model names and aliases change over time — the defaults above are reasonable
+starting points, not guarantees; override with `KUBE_ASSISTANT_LLM_MODEL` if
+your provider has moved on. `kube-assistant doctor` checks that the right
+API key is set for whichever backend you've configured.
+
+Adding a sixth provider is one small class in `llm_client.py`: subclass
+`LLMBackend` (or `OpenAICompatibleBackend` if it speaks the OpenAI chat
+shape) and register it in `_BACKEND_CLASSES`.
 
 ## Architecture
 

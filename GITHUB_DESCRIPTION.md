@@ -9,7 +9,7 @@ Copy-paste content for the repo's "About" section, topics, and social preview.
 Use ONE of these (GitHub limits this field to ~350 characters):
 
 **Option A (feature-forward):**
-> Agentic Kubernetes troubleshooting CLI + MCP server. Detects CrashLoopBackOff/OOMKilled pods, explains root cause via local LLM (Ollama), and proposes guarded auto-fixes or generates Helm manifests. Built for Cursor & Claude Desktop.
+> Agentic Kubernetes troubleshooting CLI + MCP server. Detects CrashLoopBackOff/OOMKilled pods, explains root cause via a local LLM (Ollama) or hosted providers (OpenAI/Anthropic/Gemini/Groq), and proposes guarded auto-fixes or generates Helm manifests. Built for Cursor & Claude Desktop.
 
 **Option B (short/punchy):**
 > AI-powered `kubectl` copilot: an MCP server + CLI that diagnoses failing Kubernetes pods with a local LLM and suggests (or applies, with confirmation) fixes.
@@ -24,6 +24,9 @@ mcp
 model-context-protocol
 llm
 ollama
+openai
+anthropic
+gemini
 cli
 devops
 sre
@@ -59,8 +62,9 @@ work can be automated so a human (or an AI agent) only has to make the
 actual judgment call.
 
 **What I built:** a Python CLI and an MCP (Model Context Protocol) server
-that together let a local LLM (via Ollama) or an agent inside Cursor /
-Claude Desktop:
+that together let a local LLM (via Ollama) or a hosted one (OpenAI,
+Anthropic, Google Gemini, or Groq) — used directly, or through an agent
+inside Cursor / Claude Desktop:
 
 1. **Scan** a cluster or namespace and classify every failing pod
    (`CrashLoopBackOff`, `OOMKilled`, `ImagePullBackOff`, config errors) with
@@ -87,8 +91,9 @@ directly, with the model choosing which tool to invoke and when, instead of
 me hand-rolling a prompt-parsing layer.
 
 **Stack:** Python, FastAPI-style typed tool definitions via FastMCP, Typer +
-Rich for the CLI, the official `kubernetes` Python client, Ollama /
-OpenAI-compatible APIs for the LLM layer, PyYAML for manifest generation.
+Rich for the CLI, the official `kubernetes` Python client, and a pluggable
+LLM layer (Ollama, OpenAI, Anthropic, Gemini, Groq) for diagnosis, PyYAML
+for manifest generation.
 Packaged and published as an installable PyPI package
 (`pip install kube-assistant-mcp`), with CI (GitHub Actions) running the
 test suite against every PR and auto-publishing to PyPI on tagged releases.
@@ -103,6 +108,10 @@ test suite against every PR and auto-publishing to PyPI on tagged releases.
   events), not a raw terminal dump — smaller context, more consistent
   parsing, and it works the same whether the backend is a local 8B model or
   GPT-4-class.
+- The LLM layer is a small `LLMBackend` abstract base class with one
+  subclass per provider (including a shared `OpenAICompatibleBackend` for
+  OpenAI/Groq, since they speak the same wire format) — adding a sixth
+  provider is a ~15-line class, not a refactor.
 
-Repo: https://github.com/yonatani94/kube-assistant-mcp
+Repo: https://github.com/YOUR_USERNAME/kube-assistant-mcp
 PyPI: https://pypi.org/project/kube-assistant-mcp/
