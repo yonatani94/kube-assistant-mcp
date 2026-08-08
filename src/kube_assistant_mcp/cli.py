@@ -215,7 +215,7 @@ def generate(
     port: int = typer.Option(8080, "--port"),
     replicas: int = typer.Option(1, "--replicas"),
     kind_: str = typer.Option("manifest", "--kind", help="manifest | helm"),
-    output: Path = typer.Option(_DEFAULT_OUTPUT_DIR, "--output", "-o"),
+    output: Path = typer.Option(_DEFAULT_OUTPUT_DIR, "--output", "-o"),  # noqa: B008
 ):
     """Generate a plain Deployment+Service manifest, or a minimal Helm chart."""
     spec = DeploymentSpec(name=name, namespace=namespace, image=image, container_port=port, replicas=replicas)
@@ -334,7 +334,7 @@ def setup(
                 raise typer.Exit(code=0)
         for desc, cmd in plan:
             console.print(f"\n[dim]Running: {' '.join(cmd)}[/dim]")
-            result = subprocess.run(cmd)
+            result = subprocess.run(cmd, check=False)            
             if result.returncode != 0:
                 console.print(f"[red]Failed: {desc} (exit code {result.returncode})[/red]")
 
@@ -342,7 +342,7 @@ def setup(
     if not skip_ollama and shutil.which("ollama") is not None:
         resolved_model = model or LLMConfig.from_env().model
         console.print(f"\n[bold]Checking Ollama model '{resolved_model}'...[/bold]")
-        list_result = subprocess.run(["ollama", "list"], capture_output=True, text=True)
+        list_result = subprocess.run(["ollama", "list"], capture_output=True, text=True, check=False)
         have_model = list_result.returncode == 0 and resolved_model in list_result.stdout
 
         if have_model:
@@ -354,7 +354,7 @@ def setup(
                 f"Pull the '{resolved_model}' model now? (several GB, can take a few minutes)"
             )
             if pull_now:
-                pull_result = subprocess.run(["ollama", "pull", resolved_model])
+                pull_result = subprocess.run(["ollama", "pull", resolved_model], check=False)
                 if pull_result.returncode != 0:
                     console.print(
                         "[red]Failed to pull the model.[/red] Is the Ollama server running? "
