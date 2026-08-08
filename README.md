@@ -11,6 +11,10 @@ It ships two ways to use it:
 - **CLI** — `kube-assistant scan / diagnose / open-ticket / generate`
 - **MCP server** — the same capabilities exposed as tools for **Cursor** or **Claude Desktop**, so an AI agent can diagnose your cluster and file the ticket in natural language.
 
+![kube-assistant-mcp demo: a plain-English request triggers scanning and diagnosing a failing pod, then filing a Jira ticket with the root cause and fix, ending on the real Jira ticket page](docs/demo.gif)
+
+*A plain-English request → the agent scans and diagnoses a real failing pod → files a Jira ticket with the root cause and exact fix → the real ticket in Jira.*
+
 ```
 $ kube-assistant scan -n production
 ┏━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━┓
