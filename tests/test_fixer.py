@@ -74,7 +74,11 @@ def test_autofixer_applies_memory_patch_when_confirmed():
     mock_client = MagicMock()
     autofixer = AutoFixer(mock_client)
     plan = autofixer.plan_resource_patch(
-        deployment_name="app", namespace="default", container="app", memory_limit="1Gi", memory_request="256Mi"
+        deployment_name="app",
+        namespace="default",
+        container="app",
+        memory_limit="1Gi",
+        memory_request="256Mi",
     )
 
     result = autofixer.apply(plan, dry_run=False, confirm=True)

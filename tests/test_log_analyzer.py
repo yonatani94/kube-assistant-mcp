@@ -45,10 +45,7 @@ def test_tail_relevant_respects_context_lines():
 
 def test_multiple_distinct_patterns_detected_together():
     analyzer = LogAnalyzer()
-    log = (
-        "permission denied opening /var/lib/data\n"
-        "panic: runtime error: index out of range\n"
-    )
+    log = "permission denied opening /var/lib/data\npanic: runtime error: index out of range\n"
     findings = analyzer.analyze(log)
     names = {f.pattern_name for f in findings}
     assert "permission_denied" in names

@@ -37,7 +37,9 @@ def make_fake_pod(
         name=container_name,
         restart_count=restart_count,
         state=SimpleNamespace(waiting=waiting, terminated=terminated),
-        last_state=SimpleNamespace(terminated=last_terminated) if last_terminated else SimpleNamespace(terminated=None),
+        last_state=SimpleNamespace(terminated=last_terminated)
+        if last_terminated
+        else SimpleNamespace(terminated=None),
     )
 
     return SimpleNamespace(
