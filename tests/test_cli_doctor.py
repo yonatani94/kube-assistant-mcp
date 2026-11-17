@@ -8,7 +8,7 @@ from kube_assistant_mcp.k8s_client import KubernetesClientError
 runner = CliRunner()
 
 
-def test_doctor_reports_missing_cluster_and_llm():
+def test_doctor_reports_missing_cluster_and_llm(monkeypatch):
     """When neither the cluster nor Ollama are reachable, doctor should exit
     non-zero and list both as missing, without crashing.
     """
@@ -22,7 +22,8 @@ def test_doctor_reports_missing_cluster_and_llm():
     assert "MISSING" in result.stdout
 
 
-def test_doctor_reports_all_ok_when_everything_reachable():
+def test_doctor_reports_all_ok_when_everything_reachable(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: f"/fake/{name}")
     fake_client = MagicMock()
     fake_client.list_namespaces.return_value = ["default", "kube-system"]
     fake_client.context = "kind-kind"

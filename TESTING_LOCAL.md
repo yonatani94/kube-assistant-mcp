@@ -104,8 +104,8 @@ Cursor/Claude Desktop.
 3. Ask it something like: *"Check my kind cluster for failing pods and tell
    me why crashy-demo is crash-looping."* — the agent should call
    `list_failing_pods` then `diagnose_pod` on its own.
-4. Ask it to fix it — it should describe the plan and NOT apply anything
-   until you explicitly say to go ahead (that maps to `confirm=true`).
+4. Ask for recommended remediation. The server cannot apply it; there is no
+   `confirm=true` apply tool. An authorized human uses the approved deployment process.
 
 ## 8. Clean up
 
@@ -124,3 +124,5 @@ Common early issues:
 - `ModuleNotFoundError: kubernetes` → `pip install -e ".[dev]"` didn't finish; rerun it.
 - `Could not load kube config` → wrong `--context`, or `KUBECONFIG` env var points elsewhere.
 - Ollama diagnosis hangs/times out → confirm `ollama serve` is running and `ollama list` shows the model.
+
+For cluster-free RAG verification, see [the Week 1 guide](README.md#local-rag-setup-and-operation).

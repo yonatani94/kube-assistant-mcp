@@ -192,9 +192,5 @@ class K8sClient:
     # Manifest generation support
     # ------------------------------------------------------------------ #
     def apply_yaml(self, manifest: dict, namespace: str) -> None:
-        """Minimal generic apply for a single manifest dict (Deployment/Service/etc)."""
-        from kubernetes import client as k8s_client  # type: ignore
-        from kubernetes import utils  # type: ignore
-
-        api_client = k8s_client.ApiClient()
-        utils.create_from_dict(api_client, manifest, namespace=namespace)
+        """Deprecated compatibility stub: investigation never permits cluster writes."""
+        raise PermissionError("Cluster writes are disabled; apply changes through your approved deployment process")

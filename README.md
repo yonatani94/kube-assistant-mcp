@@ -38,6 +38,23 @@ Debugging a failing Pod is a repetitive, mechanical loop: `describe` → `logs -
 - **Manifest generation** — emits a Deployment+Service YAML pair, or a minimal, valid Helm chart skeleton.
 - **MCP server** — built with [FastMCP](https://github.com/jlowin/fastmcp); drop it into Cursor or Claude Desktop and diagnose your cluster conversationally.
 
+## Optional operational knowledge retrieval (Week 1)
+
+The source checkout now supports local Markdown RAG through Ollama embeddings and Qdrant. Seven runbooks and two clearly labeled synthetic postmortems cover common Kubernetes incidents. Retrieved guidance includes source paths, headings, content hashes and chunk IDs; it remains separate from observed cluster evidence.
+
+```bash
+pip install -e '.[dev,rag]'
+docker compose -f compose.rag.yml up -d
+ollama pull embeddinggemma
+kube-assistant knowledge ingest knowledge
+kube-assistant knowledge search 'OOMKilled memory limit'
+kube-assistant diagnose <pod> -n <namespace> --rag --no-llm
+```
+
+RAG is disabled by default. Retrieval and chat failures preserve rule-based diagnostics. The existing five MCP tools remain; `diagnose_pod` accepts `use_rag`. No commands suggested by the model are executed. These source changes have not been published to PyPI.
+
+The seven-query local retrieval pilot found the expected runbook in the top three for all seven queries. This is not a diagnostic-accuracy benchmark. Valid citations do not prove that a model's conclusions are supported.
+
 ## Installation
 
 ### Option A — from PyPI
@@ -188,22 +205,23 @@ kube-assistant open-ticket api-7f8c9d -n production
 
 ## Architecture
 
+```mermaid
+flowchart TD
+    CLI[Typer CLI] --> D[Shared diagnostic service]
+    MCP[FastMCP tools] --> D
+    D --> K[Kubernetes evidence]
+    D --> R[Log patterns and rule suggestions]
+    D --> Q[Optional retrieval]
+    Q --> E[Ollama embeddings]
+    Q --> V[Qdrant snapshot alias]
+    MD[Markdown runbooks] --> C[Chunking and ingestion]
+    C --> E
+    E --> V
+    D --> L[Optional LLM synthesis]
+    D --> O[Evidence, guidance and validated citations]
 ```
-CLI (Typer) ──┐
-              ├──> K8sClient (kubernetes python client, read-only)
-MCP (FastMCP)─┘         │
-                         ▼
-                  LogAnalyzer (regex patterns)
-                         │
-                         ▼
-              RuleBasedFixer  +  LLMClient (Ollama / OpenAI)
-                         │
-                         ▼
-                JiraClient (opens a bug ticket, never touches the cluster)
-                         │
-                         ▼
-                ManifestGenerator (YAML / Helm)
-```
+
+Qdrant provides the standalone knowledge index. The project has no existing PostgreSQL investment, so a local Qdrant container adds a small operational footprint. Retrieval uses a separately configured embedding model. Shared diagnostic logic serves both CLI and MCP.
 
 ## Development
 
@@ -214,14 +232,13 @@ make setup
 pytest
 ```
 
-The test suite mocks the Kubernetes API and the LLM backend, so `pytest` runs with no cluster and no network access.
+The default test suite uses mocked Kubernetes/LLM responses and Qdrant local mode; it requires no cluster or network. The opt-in live RAG test requires local Qdrant and Ollama. Install the dev and rag extras to exercise all offline retrieval tests.
 
 ## Safety notes
 
 This tool is **read-only against the cluster** — it never deletes, patches,
 or otherwise mutates anything it's pointed at. It only ever calls `list`,
-`get`, `logs`, and `events` against the Kubernetes API, and the only
-externally-visible side effect it can produce at all is opening a Jira
+`get`, `logs`, and `events` against the Kubernetes API, and its separate integrations can write local generated files, index knowledge in Qdrant, or open a Jira
 ticket (an explicit, separate call — `open_jira_ticket` / `open-ticket`).
 
 This is intentional: the tool is designed for support tiers who have
@@ -240,8 +257,104 @@ rules:
 ```
 
 Bind that (not `edit`/`admin`) to the ServiceAccount or user running
-`kube-assistant`/the MCP server, and there is no code path — bug or
-otherwise — that can change your cluster's state.
+`kube-assistant`/the MCP server, and Kubernetes authorization provides an independent write boundary. The legacy
+`apply_yaml` helper now raises PermissionError; no investigation path executes remediation.
+
+## Local RAG setup and operation
+
+## Start from the source checkout
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e '.[dev,rag]'
+docker compose -f compose.rag.yml up -d
+# Start Ollama separately if it is not already running: ollama serve
+ollama pull embeddinggemma
+kube-assistant knowledge ingest knowledge
+kube-assistant knowledge search 'Pod cannot start: image manifest unknown'
+```
+
+The Compose service binds Qdrant only to 127.0.0.1:6333 and persists vectors in a named volume. Ollama runs on the Mac host; the Python application also runs on the host. This preserves local inference without requiring a full application container. The optional extra pins qdrant-client 1.14.3, verified with Qdrant server 1.14.1. These are tested versions, not a claim that they are latest. No cloud services or Kubernetes cluster are needed for ingestion/search.
+
+If port 6333 is occupied, set `QDRANT_PORT=6335` for Compose and `KUBE_ASSISTANT_QDRANT_URL=http://localhost:6335` for Python. Do not expose this unauthenticated development database outside localhost. Start a single ingestion writer per collection alias.
+
+### Diagnosis
+
+```bash
+# Existing behavior: RAG is disabled by default.
+kube-assistant diagnose <pod> -n <namespace> --no-llm --no-rag
+# Add retrieved guidance without requiring a chat model.
+kube-assistant diagnose <pod> -n <namespace> --rag --no-llm
+# Both optional AI components.
+kube-assistant diagnose <pod> -n <namespace> --rag
+```
+
+Existing five MCP tools remain. `diagnose_pod` accepts optional `use_rag`; omitted means use the environment setting, false explicitly disables retrieval. Existing output keys remain, with added `evidence`, `retrieved_guidance`, `citation_ids`, `rag_status` and `llm_status`. `--rag` also works with the explicit CLI `open-ticket` operation; no test or demo sends a Jira ticket. MCP direct log output receives best-effort redaction and tail_lines is bounded to 1–2000.
+
+### Cluster-free demonstration and checks
+
+```bash
+python scripts/demo_week1.py                    # deterministic rules, no services
+python scripts/demo_week1.py --rag              # real retrieval, synthetic evidence
+KUBE_ASSISTANT_LLM_MODEL=qwen2.5:1.5b python scripts/demo_week1.py --rag --llm
+python scripts/evaluate_week1.py > /tmp/week1-results.json
+pytest -q                                     # offline suite; live test skipped
+RUN_LIVE_RAG=1 pytest tests/integration -q       # actual Ollama + Qdrant
+```
+
+The chat demo requires the selected model to have been pulled separately. `qwen2.5:1.5b` was already installed on the audit machine; no chat model default was changed. The integration test uses a unique test collection and removes only its own snapshots. The evaluation script ingests into the configured collection alias and is intended for the example corpus. Never point it at an unrelated knowledge index.
+
+The demo clearly labels its evidence synthetic. A successful model response means schema/citation validation passed, not that its interpretation is proven. The live smoke response inferred memory growth without a measured memory trend: this remains an unsupported inference to catch in later faithfulness evaluations.
+
+### Configuration
+
+| Variable | Default | Purpose |
+|---|---|---|
+| KUBE_ASSISTANT_RAG_ENABLED | false | Enable retrieval for diagnosis; CLI/MCP explicit options override |
+| KUBE_ASSISTANT_QDRANT_URL | http://localhost:6333 | Vector database URL |
+| KUBE_ASSISTANT_RAG_COLLECTION | kube_assistant_knowledge | Active snapshot alias; dedicated to one corpus |
+| KUBE_ASSISTANT_EMBED_MODEL | embeddinggemma | Embedding model, independent of chat provider |
+| KUBE_ASSISTANT_EMBED_URL | http://localhost:11434 | Ollama embedding server |
+| KUBE_ASSISTANT_RAG_TIMEOUT | 30 | Per-request timeout, 1–120 seconds |
+| KUBE_ASSISTANT_RAG_TOP_K | 3 | Maximum passages, 1–10 |
+| KUBE_ASSISTANT_RAG_CONTEXT_CHARS | 5000 | Retrieval context character budget, 200–20000 |
+| KUBE_ASSISTANT_RAG_CHUNK_CHARS | 1600 | Maximum chunk characters, 200–16000 |
+| KUBE_ASSISTANT_RAG_OVERLAP | 160 | Prose overlap, less than half the chunk size |
+
+Timeout is per request, not a global investigation deadline; Week 2 adds workflow budgets. Character limits are not exact token limits. Oversized fenced code blocks and unclosed fences fail ingestion rather than silently truncating commands. Overlap applies within a section, not across unrelated headings. Empty ingestion is rejected to avoid accidentally replacing an index with nothing.
+
+### Index lifecycle and attribution
+
+Every chunk carries a UUID derived from relative source path, content hash, chunking configuration and index; it also stores document ID, source, heading and review date. Query/document vectors use the same model. The Ollama model digest and vector dimension are checked against index metadata. A changed model requires a new collection alias and complete reindex.
+
+Repeat ingestion of identical documents is a no-op. Changed or removed documents produce a new complete snapshot, then Qdrant switches the alias. Old snapshots are retained so active readers and operators can use them for rollback. Failed writes can leave orphan snapshots; inspect and clean old collections explicitly after confirming no active readers need them. Concurrent writers, automatic retention and cross-tenant isolation are outside this increment.
+
+Sources come from stored metadata, not model-authored references. Model citation IDs must belong to the passages actually supplied. Model-authored Markdown links, URLs and Markdown file references in explanatory prose are rejected. This enforces reference integrity but cannot prove that every sentence follows from a passage. Citation IDs do not constitute confidence scores.
+
+### Failure modes and limits
+
+- Retrieval unavailable, missing optional dependency, model mismatch or invalid config: diagnosis keeps rules and reports `rag_status=unavailable`.
+- Chat unavailable, invalid credentials, malformed JSON/schema or unknown citations: diagnosis keeps rules and reports `llm_status=unavailable`.
+- Retrieval works without chat. No generated command is executed.
+- Redaction covers common credential assignments, bearer tokens, JWT-like values, private keys and URL credentials. It is best effort, not a complete secret scanner. Treat documents/logs as untrusted and avoid sending sensitive data to hosted models.
+- Source Markdown is stored in Qdrant; use a curated nonsensitive corpus. Reindex after document edits and review dated guidance before applying it.
+- Semantic search returns nearest passages, even for unrelated questions; no calibrated relevance threshold, hybrid search or reranker is implemented yet.
+- Existing classifier limitations remain: not every Pending/probe/init-container incident is discovered automatically. Runbook retrieval supports these topics independently.
+
+Stop the local service without deleting its data:
+
+```bash
+docker compose -f compose.rag.yml stop
+```
+
+## Evaluation and roadmap
+
+The Week 1 offline suite passed 98 tests. The real Ollama/Qdrant integration test passed separately. Ruff, package builds and dependency checks passed. Seven authored queries achieved expected-runbook Hit@3 of 1.0 and MRR@3 of 0.929. The measured corpus contains 34 chunks from nine documents. Raw results are available in [the evaluation artifact](docs/week1-retrieval-results.json). The live model inferred memory growth without a measured trend, so generated hypotheses still require evidence review.
+
+Week 1 is complete. Week 2 adds bounded multi-step investigation and state. Week 3 adds tracing, metrics and security controls. Week 4 adds a larger incident evaluation set and delivery demonstrations.
+
+RAG supplies versioned operational knowledge at inference time. Query and document embeddings use the same model digest. Changing the model requires rebuilding the index. Chunk provenance supports audit and source attribution, while claim support requires separate evaluation.
 
 ## License
 

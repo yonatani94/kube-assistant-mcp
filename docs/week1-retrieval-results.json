@@ -1,0 +1,101 @@
+{
+  "purpose": "Small authored retrieval pilot, not held-out diagnostic accuracy",
+  "python": "3.12.13",
+  "platform": "macOS-26.6.2-arm64-arm-64bit",
+  "qdrant_client": "1.14.3",
+  "embedding_model": "embeddinggemma:latest@85462619ee721b466c5927d109d4cb765861907d5417b9109caebc4e614679f1",
+  "index": {
+    "status": "indexed",
+    "kind": "metadata",
+    "model": "embeddinggemma:latest@85462619ee721b466c5927d109d4cb765861907d5417b9109caebc4e614679f1",
+    "dimension": 768,
+    "fingerprint": "c524899401288db361fa6156f08929e2abad431bd3a17017695b035c9853666d",
+    "chunks": 34
+  },
+  "chunk_chars": 1600,
+  "overlap": 160,
+  "top_k": 3,
+  "context_chars": 5000,
+  "ingestion_seconds": 2.1211,
+  "hit_at_k": 1.0,
+  "mrr_at_k": 0.9285714285714286,
+  "cases": [
+    {
+      "query": "Container exits repeatedly with a Python traceback after startup",
+      "expected_source": "runbooks/crashloopbackoff.md",
+      "sources": [
+        "runbooks/crashloopbackoff.md",
+        "runbooks/crashloopbackoff.md",
+        "runbooks/crashloopbackoff.md"
+      ],
+      "first_relevant_rank": 1,
+      "seconds": 0.0333
+    },
+    {
+      "query": "Container was OOMKilled and memory usage grew near its limit",
+      "expected_source": "runbooks/oomkilled.md",
+      "sources": [
+        "runbooks/oomkilled.md",
+        "runbooks/oomkilled.md",
+        "runbooks/oomkilled.md"
+      ],
+      "first_relevant_rank": 1,
+      "seconds": 0.0294
+    },
+    {
+      "query": "ImagePullBackOff with manifest unknown when pulling a new image tag",
+      "expected_source": "runbooks/imagepullbackoff.md",
+      "sources": [
+        "runbooks/imagepullbackoff.md",
+        "runbooks/imagepullbackoff.md",
+        "runbooks/imagepullbackoff.md"
+      ],
+      "first_relevant_rank": 1,
+      "seconds": 0.0274
+    },
+    {
+      "query": "Pod is Pending with FailedScheduling insufficient cpu",
+      "expected_source": "runbooks/pending-pods.md",
+      "sources": [
+        "runbooks/pending-pods.md",
+        "runbooks/pending-pods.md",
+        "runbooks/pending-pods.md"
+      ],
+      "first_relevant_rank": 1,
+      "seconds": 0.021
+    },
+    {
+      "query": "Application lookup inventory no such host after namespace migration",
+      "expected_source": "runbooks/dns-failures.md",
+      "sources": [
+        "postmortems/checkout-service-dns.md",
+        "runbooks/dns-failures.md",
+        "runbooks/dns-failures.md"
+      ],
+      "first_relevant_rank": 2,
+      "seconds": 0.0217
+    },
+    {
+      "query": "Readiness probe failed with HTTP 503 but container is still running",
+      "expected_source": "runbooks/probe-failures.md",
+      "sources": [
+        "runbooks/probe-failures.md",
+        "runbooks/probe-failures.md",
+        "runbooks/probe-failures.md"
+      ],
+      "first_relevant_rank": 1,
+      "seconds": 0.0235
+    },
+    {
+      "query": "Node disk pressure ephemeral storage eviction and exhausted capacity",
+      "expected_source": "runbooks/resource-exhaustion.md",
+      "sources": [
+        "runbooks/resource-exhaustion.md",
+        "runbooks/oomkilled.md",
+        "runbooks/resource-exhaustion.md"
+      ],
+      "first_relevant_rank": 1,
+      "seconds": 0.0238
+    }
+  ]
+}

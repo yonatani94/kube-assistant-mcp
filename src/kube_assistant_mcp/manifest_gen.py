@@ -13,6 +13,8 @@ from pathlib import Path
 
 import yaml
 
+from .security import safe_output_path, validate_name
+
 
 @dataclass
 class DeploymentSpec:
@@ -28,6 +30,13 @@ class DeploymentSpec:
     env: dict[str, str] | None = None
     liveness_path: str | None = None
     readiness_path: str | None = None
+
+
+    def __post_init__(self):
+        validate_name(self.name)
+        validate_name(self.namespace)
+        if not 1 <= self.container_port <= 65535 or self.replicas < 0:
+            raise ValueError("Invalid container port or replica count")
 
 
 class ManifestGenerator:
@@ -94,8 +103,10 @@ class ManifestGenerator:
         """Writes a minimal, valid Helm chart to output_dir/<name>/ and
         returns the chart directory path.
         """
-        chart_dir = output_dir / spec.name
-        templates_dir = chart_dir / "templates"
+        chart_dir = safe_output_path(output_dir, spec.name)
+        templates_dir = safe_output_path(output_dir, spec.name, "templates")
+        for part in ("Chart.yaml", "values.yaml", ".helmignore", "templates/deployment.yaml", "templates/service.yaml"):
+            safe_output_path(output_dir, spec.name, part)
         templates_dir.mkdir(parents=True, exist_ok=True)
 
         (chart_dir / "Chart.yaml").write_text(

@@ -12,12 +12,11 @@ from __future__ import annotations
 
 from fastmcp import FastMCP
 
-from .fixer import RuleBasedFixer
+from .diagnostics import diagnose_pod as run_diagnosis
 from .jira_client import JiraClient, JiraClientError, JiraConfig, build_ticket_markdown, severity_to_priority
 from .k8s_client import K8sClient, KubernetesClientError
-from .llm_client import LLMClient, LLMConfig
-from .log_analyzer import LogAnalyzer
 from .manifest_gen import DeploymentSpec, ManifestGenerator
+from .security import redact
 
 mcp = FastMCP(
     name="kube-assistant-mcp",
@@ -80,7 +79,9 @@ def get_pod_logs(
     CrashLoopBackOff pod.
     """
     client = _client(context)
-    return client.get_pod_logs(pod_name, namespace, previous=previous, tail_lines=tail_lines)
+    if not 1 <= tail_lines <= 2000:
+        raise ValueError("tail_lines must be between 1 and 2000")
+    return redact(client.get_pod_logs(pod_name, namespace, previous=previous, tail_lines=tail_lines))
 
 
 @mcp.tool()
@@ -89,66 +90,17 @@ def diagnose_pod(
     namespace: str = "default",
     use_llm: bool = True,
     context: str | None = None,
+    use_rag: bool | None = None,
 ) -> dict:
     """Run a full diagnosis on one pod: fetch logs+events, run pattern
     detection, and (optionally) get an LLM root-cause explanation with
     concrete fix suggestions. This is the main tool an agent should call
     after finding a failing pod with list_failing_pods.
     """
-    client = _client(context)
-    issues = [i for i in client.find_failing_pods(namespace) if i.pod.name == pod_name]
-    if not issues:
+    result = run_diagnosis(_client(context), pod_name, namespace, use_llm, use_rag=use_rag)
+    if result is None:
         return {"status": "no_issue_found", "pod": pod_name, "namespace": namespace}
-
-    issue = issues[0]
-    logs = client.get_pod_logs(pod_name, namespace, container=issue.pod.container, previous=True)
-    if not logs:
-        logs = client.get_pod_logs(pod_name, namespace, container=issue.pod.container)
-    events = client.get_pod_events(pod_name, namespace)
-
-    findings = LogAnalyzer().analyze(logs)
-    rule_suggestions = RuleBasedFixer().suggest(issue)
-
-    result = {
-        "issue": {
-            "type": issue.issue_type.value,
-            "severity": issue.severity.value,
-            "restart_count": issue.restart_count,
-            "reason": issue.reason,
-        },
-        "log_findings": [
-            {"pattern": f.pattern_name, "description": f.description, "line": f.matched_line}
-            for f in findings
-        ],
-        "rule_based_fixes": [
-            {
-                "title": s.title,
-                "explanation": s.explanation,
-                "commands": s.commands,
-                "manifest_yaml": s.manifest_yaml,
-                "risk": s.risk.value,
-            }
-            for s in rule_suggestions
-        ],
-    }
-
-    if use_llm:
-        llm = LLMClient(LLMConfig.from_env())
-        summary = "; ".join(f.description for f in findings)
-        diagnosis = llm.diagnose(issue, logs, events, summary)
-        result["llm_explanation"] = diagnosis.llm_explanation
-        result["llm_fixes"] = [
-            {
-                "title": s.title,
-                "explanation": s.explanation,
-                "commands": s.commands,
-                "manifest_yaml": s.manifest_yaml,
-                "risk": s.risk.value,
-            }
-            for s in diagnosis.suggestions
-        ]
-
-    return result
+    return result.to_mcp()
 
 
 @mcp.tool()

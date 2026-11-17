@@ -16,20 +16,19 @@ import platform
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from .fixer import RuleBasedFixer
+from .diagnostics import diagnose_pod as run_diagnosis
 from .jira_client import JiraClient, JiraClientError, JiraConfig, build_ticket_markdown, severity_to_priority
 from .k8s_client import K8sClient, KubernetesClientError
-from .llm_client import LLMClient, LLMConfig
-from .log_analyzer import LogAnalyzer
+from .llm_client import LLMConfig
 from .manifest_gen import DeploymentSpec, ManifestGenerator
-from .models import FixSuggestion, PodIssue
+from .models import FixSuggestion
+from .security import safe_output_path
 
 app = typer.Typer(
     name="kube-assistant",
@@ -49,65 +48,8 @@ def _get_client(context: str | None) -> K8sClient:
         raise typer.Exit(code=1)
 
 
-@dataclass
-class DiagnosisResult:
-    issue: PodIssue
-    findings_summary: str
-    suggestions: list[FixSuggestion]
-    llm_explanation: str | None
-    llm_label: str | None
-
-
-def _diagnose_pod(
-    client: K8sClient,
-    pod_name: str,
-    namespace: str,
-    use_llm: bool,
-    llm_backend: str | None,
-    llm_model: str | None,
-) -> DiagnosisResult | None:
-    """Shared logic behind `diagnose` and `open-ticket`: fetch logs + events,
-    classify the failure, and (optionally) ask the LLM to explain it and
-    suggest fixes. Returns None if the pod has no detected issue.
-    """
-    issues = [i for i in client.find_failing_pods(namespace) if i.pod.name == pod_name]
-    if not issues:
-        return None
-
-    issue = issues[0]
-    logs = client.get_pod_logs(pod_name, namespace, container=issue.pod.container, previous=True)
-    if not logs:
-        logs = client.get_pod_logs(pod_name, namespace, container=issue.pod.container)
-    events = client.get_pod_events(pod_name, namespace)
-
-    analyzer = LogAnalyzer()
-    findings = analyzer.analyze(logs)
-    findings_summary = "; ".join(f"{f.pattern_name}: {f.description}" for f in findings)
-
-    suggestions = RuleBasedFixer().suggest(issue)
-    llm_explanation = None
-    llm_label = None
-
-    if use_llm:
-        config = LLMConfig.from_env()
-        if llm_backend:
-            config.backend = llm_backend
-        if llm_model:
-            config.model = llm_model
-        llm = LLMClient(config)
-        diagnosis = llm.diagnose(issue, logs, events, findings_summary)
-        llm_explanation = diagnosis.llm_explanation
-        llm_label = f"{config.backend}/{config.model}"
-        if diagnosis.suggestions:
-            suggestions = diagnosis.suggestions + suggestions
-
-    return DiagnosisResult(
-        issue=issue,
-        findings_summary=findings_summary,
-        suggestions=suggestions,
-        llm_explanation=llm_explanation,
-        llm_label=llm_label,
-    )
+def _diagnose_pod(client, pod_name, namespace, use_llm, llm_backend, llm_model, use_rag=None):
+    return run_diagnosis(client, pod_name, namespace, use_llm, llm_backend, llm_model, use_rag)
 
 
 @app.command()
@@ -151,12 +93,13 @@ def diagnose(
     use_llm: bool = typer.Option(True, "--llm/--no-llm", help="Ask the local/remote LLM for an explanation."),
     llm_backend: str | None = typer.Option(None, "--llm-backend", help="ollama | openai | anthropic | gemini | groq"),
     llm_model: str | None = typer.Option(None, "--llm-model"),
+    use_rag: bool | None = typer.Option(None, "--rag/--no-rag", help="Retrieve operational guidance."),
 ):
     """Deep-dive a single pod: fetch logs + events, classify the failure,
     and (optionally) ask the LLM to explain it and suggest fixes.
     """
     client = _get_client(context)
-    result = _diagnose_pod(client, pod_name, namespace, use_llm, llm_backend, llm_model)
+    result = _diagnose_pod(client, pod_name, namespace, use_llm, llm_backend, llm_model, use_rag)
     if result is None:
         console.print(
             f"[yellow]No known failure detected for pod '{pod_name}' in namespace "
@@ -171,8 +114,13 @@ def diagnose(
 
     if result.llm_explanation:
         console.print(f"\n[bold cyan]LLM explanation ({result.llm_label}):[/bold cyan]")
-        console.print(result.llm_explanation)
+        console.print(result.llm_explanation, markup=False)
 
+    if result.rag_status != "disabled":
+        console.print(f"\nRetrieved guidance ({result.rag_status}; not observed evidence):")
+        for passage in result.retrieved_guidance:
+            console.print(f"{passage['source']} — {passage['heading']} [{passage['chunk_id']}]", markup=False)
+            console.print(passage['text'], markup=False)
     console.print("\n[bold]Suggested fixes:[/bold]")
     for idx, s in enumerate(result.suggestions, 1):
         console.print(f"\n[bold]{idx}. {s.title}[/bold]  [dim](risk: {s.risk.value})[/dim]")
@@ -218,6 +166,7 @@ def open_ticket(
     use_llm: bool = typer.Option(True, "--llm/--no-llm", help="Ask the local/remote LLM for an explanation."),
     llm_backend: str | None = typer.Option(None, "--llm-backend", help="ollama | openai | anthropic | gemini | groq"),
     llm_model: str | None = typer.Option(None, "--llm-model"),
+    use_rag: bool | None = typer.Option(None, "--rag/--no-rag", help="Retrieve operational guidance."),
     project: str | None = typer.Option(None, "--project", help="Jira project key (overrides JIRA_PROJECT_KEY)."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the interactive confirmation prompt."),
 ):
@@ -226,7 +175,7 @@ def open_ticket(
     This tool never touches the cluster itself — read-only, always.
     """
     client = _get_client(context)
-    result = _diagnose_pod(client, pod_name, namespace, use_llm, llm_backend, llm_model)
+    result = _diagnose_pod(client, pod_name, namespace, use_llm, llm_backend, llm_model, use_rag)
     if result is None:
         console.print(f"[yellow]Pod '{pod_name}' has no detected issue; nothing to file.[/yellow]")
         raise typer.Exit(code=0)
@@ -235,6 +184,11 @@ def open_ticket(
     summary = f"[{issue.severity.value}] {issue.issue_type.value} in {namespace}/{pod_name}"
     description = result.llm_explanation or result.findings_summary or "No pattern match; manual log review needed."
     fix_text = _format_fix_markdown(result.suggestions)
+    if result.citation_ids:
+        cited = set(result.citation_ids)
+        sources = [f"- {p['source']} — {p['heading']} [{p['chunk_id']}]"
+                   for p in result.retrieved_guidance if p['chunk_id'] in cited]
+        description += "\n\nRetrieved guidance (not observed evidence):\n" + "\n".join(sources)
     priority = severity_to_priority(issue.severity.value)
 
     console.print("\n[bold]Ticket preview[/bold]")
@@ -286,7 +240,7 @@ def generate(
         deployment = generator.deployment_manifest(spec)
         service = generator.service_manifest(spec)
         yaml_text = generator.to_yaml(deployment, service)
-        out_file = output / f"{name}.yaml"
+        out_file = safe_output_path(output, f"{name}.yaml")
         out_file.write_text(yaml_text)
         console.print(f"[green]Wrote manifest to {out_file}[/green]")
     elif kind_ == "helm":
@@ -543,8 +497,49 @@ def serve(
     """Start the MCP server so Cursor / Claude Desktop can call this tool."""
     from .mcp_server import mcp
 
-    console.print(f"[dim]Starting kube-assistant-mcp server (transport={transport})...[/dim]")
+    Console(stderr=True).print(f"Starting kube-assistant-mcp server (transport={transport})...")
     mcp.run(transport=transport)
+
+
+knowledge_app = typer.Typer(help="Ingest/search local Markdown knowledge (requires the rag extra).")
+app.add_typer(knowledge_app, name="knowledge")
+
+
+@knowledge_app.command("ingest")
+def knowledge_ingest(path: Path = typer.Argument(..., exists=True, file_okay=False)):  # noqa: B008
+    import json
+
+    from .rag.documents import load_chunks
+    from .rag.retrieval import create_retriever
+    retriever = None
+    try:
+        retriever = create_retriever()
+        config = retriever.config
+        chunks = load_chunks(path, config.chunk_chars, config.overlap)
+        console.print(json.dumps(retriever.store.ingest(chunks, retriever.embedder)), markup=False)
+    except Exception as exc:  # noqa: BLE001 — sanitize service errors at CLI boundary
+        console.print(f"Knowledge ingestion failed ({type(exc).__name__}); check configuration and services.")
+        raise typer.Exit(1)
+    finally:
+        if retriever:
+            retriever.close()
+
+
+@knowledge_app.command("search")
+def knowledge_search(query: str):
+    import json
+
+    from .rag.retrieval import create_retriever
+    retriever = None
+    try:
+        retriever = create_retriever()
+        print(json.dumps(retriever.retrieve(query), indent=2))
+    except Exception as exc:  # noqa: BLE001 — sanitize service errors at CLI boundary
+        console.print(f"Knowledge search failed ({type(exc).__name__}); check configuration and services.")
+        raise typer.Exit(1)
+    finally:
+        if retriever:
+            retriever.close()
 
 
 if __name__ == "__main__":

@@ -67,7 +67,7 @@ class FixSuggestion:
     commands: list[str] = field(default_factory=list)
     """Human-runnable kubectl / helm commands, shown to the user."""
     patch: dict | None = None
-    """Optional strategic-merge-patch body, used for --apply."""
+    """Legacy suggestion metadata only; never executed."""
     manifest_yaml: str | None = None
     """Optional full manifest/Helm values suggested as a replacement or addition."""
     risk: Severity = Severity.LOW
@@ -83,3 +83,5 @@ class Diagnosis:
     llm_explanation: str | None = None
     source: str = "rules"
     """'rules' | 'llm' | 'rules+llm' — where the diagnosis came from."""
+
+    citation_ids: list[str] = field(default_factory=list)
